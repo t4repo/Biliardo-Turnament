@@ -762,24 +762,42 @@
   function viewPlay(params) {
     var catId = CATS[params.c] ? params.c : 'eightball';
     return '<div class="wrap narrow">' +
-      '<header class="page-head"><span class="eyebrow">Quick game</span><h1>Start a game</h1><p class="muted">Enter the players and the referee, choose a category and press Start. Results count on the leaderboard.</p></header>' +
+      '<header class="page-head"><span class="eyebrow">Quick game</span><h1>Start a game</h1><p class="muted">Choose how many players, enter their names and the referee, pick a category and press Start.</p></header>' +
       '<form class="card form" id="playForm" autocomplete="off" novalidate>' +
+        '<fieldset><legend>How many players?</legend><div class="seg seg-3" role="radiogroup" aria-label="Number of players">' +
+          [2, 3, 4].map(function (n) { return '<label><input type="radio" name="count" value="' + n + '"' + (n === 2 ? ' checked' : '') + '><span><b>' + n + ' players</b></span></label>'; }).join('') +
+        '</div><p class="hint" data-count-hint></p></fieldset>' +
         '<fieldset><legend>Category</legend>' + catPicker(catId) + '</fieldset>' +
         '<fieldset><legend>Players</legend><div class="grid-2">' +
-          '<label class="field"><span>Player 1</span><input name="p1" list="dl-players" maxlength="40" placeholder="Name" required></label>' +
-          '<label class="field"><span>Player 2</span><input name="p2" list="dl-players" maxlength="40" placeholder="Name" required></label>' +
+          [1, 2, 3, 4].map(function (i) { return '<label class="field" data-fp-player="' + i + '"' + (i > 2 ? ' hidden' : '') + '><span>Player ' + i + '</span><input name="p' + i + '" list="dl-players" maxlength="40" placeholder="Name"></label>'; }).join('') +
         '</div></fieldset>' +
         '<fieldset><legend>Referee</legend><label class="field"><span>Referee name <small class="muted">(optional)</small></span><input name="ref" list="dl-refs" maxlength="40" placeholder="Name"></label></fieldset>' +
-        '<fieldset><legend>Format</legend>' + formatFields(catId) +
-          '<label class="field"><span>First break</span><select name="breaker"><option value="1">Player 1 breaks</option><option value="2">Player 2 breaks</option><option value="lag">Lag / coin toss — pick at random</option></select></label>' +
+        '<fieldset><legend>Format</legend><div data-two>' + formatFields(catId) +
+          '<label class="field"><span>First break</span><select name="breaker"><option value="1">Player 1 breaks</option><option value="2">Player 2 breaks</option><option value="lag">Lag / coin toss — pick at random</option></select></label></div>' +
+          '<div data-multi hidden><label class="field"><span>Number of games (max 15)</span><select name="games">' + gameOptions() + '</select></label></div>' +
         '</fieldset>' +
         '<div class="form-actions"><a class="btn btn-ghost" href="#/">Cancel</a><button class="btn btn-primary btn-lg" type="submit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>Start Game</button></div>' +
       '</form>' + datalists() + '</div>';
   }
-  function afterPlay() { var f = $('#playForm'); if (f) { syncFormatFields(f, false); var p1 = $('input[name="p1"]', f); if (p1) p1.focus(); } }
+  function gameOptions() {
+    var o = '';
+    for (var g = 1; g <= 15; g++) o += '<option value="' + g + '"' + (g === 15 ? ' selected' : '') + '>' + g + (g === 1 ? ' game' : ' games') + '</option>';
+    return o;
+  }
+  function afterPlay() { var f = $('#playForm'); if (f) { syncFormatFields(f, false); playSyncCount(f); var p1 = $('input[name="p1"]', f); if (p1) p1.focus(); } }
+  function playSyncCount(f) {
+    var c = $('input[name="count"]:checked', f); var n = c ? parseInt(c.value, 10) : 2;
+    $$('[data-fp-player]', f).forEach(function (el) { el.hidden = parseInt(el.getAttribute('data-fp-player'), 10) > n; });
+    $('[data-two]', f).hidden = n > 2;
+    $('[data-multi]', f).hidden = n <= 2;
+    $('[data-count-hint]', f).textContent = n > 2
+      ? n + ' players: play up to 15 games and press +1 Point for the winner of each game. Most points wins.'
+      : '2 players: full referee match with racks, fouls and shot clock. Counts on the leaderboard.';
+  }
 
   function submitPlay(form) {
     var fd = new FormData(form);
+    if (intIn(fd.get('count'), 2, 4, 2) > 2) { submitFree(form); return; }
     var catId = fd.get('category'); var c = CATS[catId];
     if (!c) { toast('Choose a category.', 'warn'); return; }
     var n1 = cleanName(fd.get('p1')), n2 = cleanName(fd.get('p2'));
@@ -1737,7 +1755,8 @@
   }
   function submitFree(f) {
     var fd = new FormData(f);
-    var catId = CATS[fd.get('fpcat')] ? fd.get('fpcat') : 'eightball';
+    var catSel = fd.get('fpcat') || fd.get('category');
+    var catId = CATS[catSel] ? catSel : 'eightball';
     var n = intIn(fd.get('count'), 2, 4, 3);
     var names = [], seen = {};
     for (var i = 1; i <= n; i++) {
@@ -1841,6 +1860,7 @@
   });
   document.addEventListener('change', function (e) {
     if (e.target.name === 'count' && e.target.form && e.target.form.id === 'freeForm') fpSyncCount(e.target.form);
+    if (e.target.name === 'count' && e.target.form && e.target.form.id === 'playForm') playSyncCount(e.target.form);
   });
   document.addEventListener('submit', function (e) {
     if (e.target && e.target.id === 'freeForm') submitFree(e.target);
