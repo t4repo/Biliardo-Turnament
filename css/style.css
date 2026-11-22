@@ -653,6 +653,12 @@ span.form i.f-L { background: rgba(239, 75, 79, .18); color: var(--red-2); }
 .fp-s3 .score-num { color: #ff8a8d; }
 .fp-s4 .score-num { color: #5fe0a2; }
 .fp-side .btn-lg { min-height: 64px; font-size: 20px; }
+.fp-dots { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; }
+.fp-dots i { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, .3); }
+.fp-s1 .fp-dots i.on { background: var(--p1); border-color: var(--p1); }
+.fp-s2 .fp-dots i.on { background: var(--p2); border-color: var(--p2); }
+.fp-s3 .fp-dots i.on { background: #ef5b60; border-color: #ef5b60; }
+.fp-s4 .fp-dots i.on { background: var(--green); border-color: var(--green); }
 @media (max-width: 920px) { .fp-n3, .fp-n4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 600px) {
   .fp-top { grid-template-columns: 96px 1fr; padding: 10px; }

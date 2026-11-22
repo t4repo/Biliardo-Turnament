@@ -711,7 +711,7 @@
       }).join('') + '</div></section>';
 
     var liveFree = db.sessions.filter(function (x) { return x.status === 'live'; });
-    html += '<section class="card fp-cta"><div><span class="eyebrow">Normal play</span><h2>Free Play for 2, 3 or 4 players</h2><p class="muted">Up to 15 games. Press <b>+1 Point</b> for whoever wins each game; the most points wins.</p></div>' +
+    html += '<section class="card fp-cta"><div><span class="eyebrow">Normal play</span><h2>Free Play for 2, 3 or 4 players</h2><p class="muted">Press <b>+1 Point</b> for whoever wins each game. The first player to reach the target (up to 15) wins.</p></div>' +
       '<div class="row-gap">' + (liveFree.length ? '<a class="btn btn-live" href="#/free/' + liveFree[liveFree.length - 1].id + '">● Resume Free Play</a>' : '') + '<a class="btn btn-primary btn-lg" href="#/free">Start Free Play</a></div></section>';
     html += '<section class="grid-2">';
     html += '<div class="card"><div class="section-head"><h2>Tournaments</h2><a class="link" href="#/tournaments">See all →</a></div>' +
@@ -774,14 +774,14 @@
         '<fieldset><legend>Referee</legend><label class="field"><span>Referee name <small class="muted">(optional)</small></span><input name="ref" list="dl-refs" maxlength="40" placeholder="Name"></label></fieldset>' +
         '<fieldset><legend>Format</legend><div data-two>' + formatFields(catId) +
           '<label class="field"><span>First break</span><select name="breaker"><option value="1">Player 1 breaks</option><option value="2">Player 2 breaks</option><option value="lag">Lag / coin toss — pick at random</option></select></label></div>' +
-          '<div data-multi hidden><label class="field"><span>Number of games (max 15)</span><select name="games">' + gameOptions() + '</select></label></div>' +
+          '<div data-multi hidden><label class="field"><span>Points to win (max 15)</span><select name="games">' + gameOptions() + '</select></label></div>' +
         '</fieldset>' +
         '<div class="form-actions"><a class="btn btn-ghost" href="#/">Cancel</a><button class="btn btn-primary btn-lg" type="submit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>Start Game</button></div>' +
       '</form>' + datalists() + '</div>';
   }
   function gameOptions() {
     var o = '';
-    for (var g = 1; g <= 15; g++) o += '<option value="' + g + '"' + (g === 15 ? ' selected' : '') + '>' + g + (g === 1 ? ' game' : ' games') + '</option>';
+    for (var g = 1; g <= 15; g++) o += '<option value="' + g + '"' + (g === 15 ? ' selected' : '') + '>First to ' + g + (g === 1 ? ' point' : ' points') + '</option>';
     return o;
   }
   function afterPlay() { var f = $('#playForm'); if (f) { syncFormatFields(f, false); playSyncCount(f); var p1 = $('input[name="p1"]', f); if (p1) p1.focus(); } }
@@ -791,7 +791,7 @@
     $('[data-two]', f).hidden = n > 2;
     $('[data-multi]', f).hidden = n <= 2;
     $('[data-count-hint]', f).textContent = n > 2
-      ? n + ' players: play up to 15 games and press +1 Point for the winner of each game. Most points wins.'
+      ? n + ' players: press +1 Point for the winner of each game. The first player to reach the points to win (up to 15) wins.'
       : '2 players: full referee match with racks, fouls and shot clock. Counts on the leaderboard.';
   }
 
@@ -1692,21 +1692,20 @@
     s.games.forEach(function (w) { if (w >= 0 && w < pts.length) pts[w]++; });
     return pts;
   }
-  /* indexes of players still allowed to score: everyone during regular games,
-     only the tied leaders during decider games */
+  /* s.maxGames is the target: the first player to reach it wins (race to N).
+     Points go up one at a time, so two players can never reach it together. */
   function fpEligible(s) {
-    var pts = fpPoints(s);
-    if (s.games.length < s.maxGames) return s.players.map(function (_, i) { return i; });
-    var top = Math.max.apply(null, pts);
-    return pts.map(function (p, i) { return p === top ? i : -1; }).filter(function (i) { return i >= 0; });
+    return s.players.map(function (_, i) { return i; });
   }
   function fpCheckEnd(s) {
-    if (s.games.length < s.maxGames) return;
-    var lead = fpEligible(s);
-    if (lead.length === 1) {
-      s.status = 'done'; s.winnerIdx = lead[0]; s.endedAt = Date.now();
-      gesture('win', pName(s.players[lead[0]]) + ' wins!');
-      celebrate = true;
+    var pts = fpPoints(s);
+    for (var i = 0; i < pts.length; i++) {
+      if (pts[i] >= s.maxGames) {
+        s.status = 'done'; s.winnerIdx = i; s.endedAt = Date.now();
+        gesture('win', pName(s.players[i]) + ' wins!');
+        celebrate = true;
+        return;
+      }
     }
   }
   function fpRanking(s) {
@@ -1719,9 +1718,9 @@
   function viewFree() {
     var list = db.sessions.slice().sort(function (a, b) { return (b.startedAt || 0) - (a.startedAt || 0); });
     var gameOpts = '';
-    for (var g = 1; g <= FP_MAX_GAMES; g++) gameOpts += '<option value="' + g + '"' + (g === FP_MAX_GAMES ? ' selected' : '') + '>' + plural(g, 'game', 'games') + '</option>';
+    gameOpts = gameOptions();
     var html = '<div class="wrap narrow">' +
-      '<header class="page-head"><span class="eyebrow">Normal play</span><h1>Free Play</h1><p class="muted">Casual games for 2, 3 or 4 players. Choose up to 15 games and press <b>+1 Point</b> for the player who wins each game. The most points after the last game wins. If the lead is tied, the tied players play decider games.</p></header>' +
+      '<header class="page-head"><span class="eyebrow">Normal play</span><h1>Free Play</h1><p class="muted">Casual games for 2, 3 or 4 players. Choose the points to win (up to 15) and press <b>+1 Point</b> for the player who wins each game. The first player to reach that number wins: choose 9 and whoever gets 9 first wins; choose 15 and whoever gets 15 first wins.</p></header>' +
       '<form class="card form" id="freeForm" autocomplete="off" novalidate>' +
         '<fieldset><legend>Category</legend>' + catPicker('eightball', 'fpcat') + '</fieldset>' +
         '<fieldset><legend>Number of players</legend><div class="seg seg-3" role="radiogroup" aria-label="Number of players">' +
@@ -1729,8 +1728,8 @@
         '</div><div class="grid-2">' +
           [1, 2, 3, 4].map(function (i) { return '<label class="field" data-fp-player="' + i + '"' + (i > 3 ? ' hidden' : '') + '><span>Player ' + i + '</span><input name="p' + i + '" list="dl-players" maxlength="40" placeholder="Name"></label>'; }).join('') +
         '</div></fieldset>' +
-        '<fieldset><legend>Games &amp; referee</legend><div class="grid-2">' +
-          '<label class="field"><span>Number of games (max 15)</span><select name="games">' + gameOpts + '</select></label>' +
+        '<fieldset><legend>Points to win &amp; referee</legend><div class="grid-2">' +
+          '<label class="field"><span>Points to win (max 15)</span><select name="games">' + gameOpts + '</select></label>' +
           '<label class="field"><span>Referee <small class="muted">(optional)</small></span><input name="ref" list="dl-refs" maxlength="40" placeholder="Name"></label>' +
         '</div></fieldset>' +
         '<div class="form-actions"><a class="btn btn-ghost" href="#/">Cancel</a><button class="btn btn-primary btn-lg" type="submit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>Start Free Play</button></div>' +
@@ -1738,7 +1737,7 @@
     if (list.length) {
       html += '<section class="card" style="margin-top:20px"><div class="section-head"><h2>Recent Free Play</h2></div><ul class="list">' + list.slice(0, 20).map(function (s) {
         var r = fpRanking(s);
-        return '<li><a class="t-row" href="#/free/' + s.id + '"><span class="t-row-main"><b>' + esc(s.players.map(pName).join(' · ')) + '</b><small>' + esc(CATS[s.category] ? CATS[s.category].name : '') + ' · ' + s.games.length + '/' + s.maxGames + ' games · ' + esc(fmtDate(s.startedAt)) + '</small></span>' +
+        return '<li><a class="t-row" href="#/free/' + s.id + '"><span class="t-row-main"><b>' + esc(s.players.map(pName).join(' · ')) + '</b><small>' + esc(CATS[s.category] ? CATS[s.category].name : '') + ' · first to ' + s.maxGames + ' · ' + plural(s.games.length, 'game', 'games') + ' played · ' +esc(fmtDate(s.startedAt)) + '</small></span>' +
           (s.status === 'done' ? (s.winnerIdx >= 0 ? '<span class="badge badge-gold">🏆 ' + esc(pName(s.players[s.winnerIdx])) + ' ' + r[0].pts + '</span>' : '<span class="badge">Draw</span>') : '<span class="badge badge-live">Live</span>') + '</a></li>';
       }).join('') + '</ul></section>';
     }
@@ -1780,34 +1779,36 @@
     var c = CATS[s.category] || CATS.eightball;
     var pts = fpPoints(s), done = s.status === 'done';
     var elig = fpEligible(s);
-    var decider = !done && s.games.length >= s.maxGames;
-    var gameNo = Math.min(s.games.length + 1, s.maxGames);
+    var gameNo = s.games.length + 1;
     var top = Math.max.apply(null, pts);
+    var near = pts.map(function (p, i) { return p === s.maxGames - 1 ? i : -1; }).filter(function (i) { return i >= 0; });
     var html = '<div class="board-wrap"><div class="wrap"><nav class="crumbs"><a href="#/free">Free Play</a><span>/</span><span>' + esc(s.players.map(pName).join(' · ')) + '</span></nav></div>' +
       '<section class="board fp-board' + (done ? ' board-done' : '') + '">' +
-      '<div class="board-head">' + catBadge(s.category) + '<span class="bh-race">' + (done ? 'Finished · ' + s.games.length + ' games' : decider ? 'Decider game' : 'Game ' + gameNo + ' of ' + s.maxGames) + '</span>' +
+      '<div class="board-head">' + catBadge(s.category) + '<span class="bh-race">' + 'First to ' + s.maxGames + ' · ' + (done ? 'Finished after ' + plural(s.games.length, 'game', 'games') : 'Game ' + gameNo) + '</span>' +
         '<span class="bh-timer">⏱ <b id="matchTimer">' + fmtClock((done ? s.endedAt : Date.now()) - s.startedAt) + '</b></span>' +
         (done ? '<span class="badge badge-gold">Final</span>' : '<span class="badge badge-live">Live</span>') + '</div>' +
       '<div class="fp-top"><div class="ref-stage"><div class="bubble" id="refBubble" hidden></div>' + window.BT_REFEREE_SVG({ className: 'g-idle' }) + '</div>' +
         '<div class="fp-status"><span class="muted tiny">Referee</span><b>' + esc(s.refId ? rName(s.refId) || 'Referee' : 'No referee') + '</b>' +
         '<p class="fp-msg">' + (done ? (s.winnerIdx >= 0 ? '🏆 <b>' + esc(pName(s.players[s.winnerIdx])) + '</b> wins with ' + plural(pts[s.winnerIdx], 'point', 'points') + '!' : 'Finished as a draw.')
-          : decider ? 'Tie for first! Decider game between ' + esc(elig.map(function (i) { return pName(s.players[i]); }).join(' and ')) + '.'
-          : 'Press <b>+1 Point</b> for the winner of game ' + gameNo + '.') + '</p>' +
+          : near.length ? '🔥 ' + esc(near.map(function (i) { return pName(s.players[i]); }).join(' and ')) + (near.length > 1 ? ' need' : ' needs') + ' just 1 more point to win!'
+          : 'First player to reach <b>' + s.maxGames + '</b> wins. Press <b>+1 Point</b> for the winner of game ' + gameNo + '.') + '</p>' +
         '<div class="fp-progress" aria-label="Games played">' + (function () {
-          var cells = '', total = Math.max(s.maxGames, s.games.length);
-          for (var g = 0; g < total; g++) {
+          var cells = '';
+          for (var g = 0; g < s.games.length; g++) {
             var w = s.games[g];
-            cells += '<span class="fp-cell' + (w != null ? ' fp-c' + (w + 1) : '') + (g >= s.maxGames ? ' fp-extra' : '') + '" title="Game ' + (g + 1) + (w != null ? ': ' + esc(pName(s.players[w])) : '') + '">' + (w != null ? esc(initials(pName(s.players[w]))) : g + 1) + '</span>';
+            cells += '<span class="fp-cell fp-c' + (w + 1) + '" title="Game ' + (g + 1) + ': ' + esc(pName(s.players[w])) + '">' + esc(initials(pName(s.players[w]))) + '</span>';
           }
+          if (!done) cells += '<span class="fp-cell" title="Next game">' + gameNo + '</span>';
           return cells;
         })() + '</div></div></div>' +
       '<div class="fp-players fp-n' + s.players.length + '">' + s.players.map(function (pid, i) {
         var can = !done && elig.indexOf(i) >= 0;
         var leading = pts[i] === top && top > 0;
-        return '<div class="side fp-side fp-s' + (i + 1) + (done && s.winnerIdx === i ? ' side-win' : '') + (decider && !can ? ' side-lose' : '') + '">' +
+        return '<div class="side fp-side fp-s' + (i + 1) + (done && s.winnerIdx === i ? ' side-win' : '') + (done && s.winnerIdx !== i ? ' side-lose' : '') + '">' +
           '<div class="side-head"><span class="avatar fp-av' + (i + 1) + '" aria-hidden="true">' + esc(initials(pName(pid))) + '</span><div class="side-id"><h2 class="side-name">' + esc(pName(pid)) + '</h2>' +
           '<div class="side-tags">' + (leading && !done ? '<span class="tag tag-win">Leader</span>' : '') + (done && s.winnerIdx === i ? '<span class="tag tag-win">🏆 Winner</span>' : '') + '</div></div></div>' +
-          '<div class="score-big"><span class="score-num">' + pts[i] + '</span><span class="score-label">' + (pts[i] === 1 ? 'point' : 'points') + '</span></div>' +
+          '<div class="score-big"><span class="score-num">' + pts[i] + '</span><span class="score-label">of ' + s.maxGames + ' to win</span></div>' +
+          '<div class="fp-dots" aria-hidden="true">' + (function () { var d = ''; for (var k = 0; k < s.maxGames; k++) d += '<i' + (k < pts[i] ? ' class="on"' : '') + '></i>'; return d; })() + '</div>' +
           '<button class="btn btn-primary btn-lg btn-block" data-action="fpPoint" data-id="' + s.id + '" data-n="' + i + '"' + (can ? '' : ' disabled') + '>+1 Point</button></div>';
       }).join('') + '</div>' +
       '<div class="board-foot"><button class="btn btn-secondary" data-action="fpUndo" data-id="' + s.id + '"' + (s.games.length ? '' : ' disabled') + '>↶ Undo</button>' +
