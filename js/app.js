@@ -81,12 +81,12 @@
   /* ------------------------------------------------------------------ *
    * Storage
    * ------------------------------------------------------------------ */
-  function defaults() { return { version: 1, players: [], referees: [], tournaments: [], matches: [] }; }
+  function defaults() { return { version: 1, players: [], referees: [], tournaments: [], matches: [], sessions: [] }; }
 
   function normalize(d) {
     var o = defaults();
     if (!d || typeof d !== 'object') return o;
-    ['players', 'referees', 'tournaments', 'matches'].forEach(function (k) {
+    ['players', 'referees', 'tournaments', 'matches', 'sessions'].forEach(function (k) {
       o[k] = Array.isArray(d[k]) ? d[k].filter(function (x) { return x && typeof x === 'object' && typeof x.id === 'string'; }) : [];
     });
     o.players.forEach(function (p) { p.name = cleanName(p.name) || 'Player'; });
@@ -103,6 +103,16 @@
     });
     o.tournaments = o.tournaments.filter(function (t) { return CATS[t.category] && Array.isArray(t.playerIds); });
     o.tournaments.forEach(function (t) { if (!Array.isArray(t.refereeIds)) t.refereeIds = []; });
+    o.sessions = o.sessions.filter(function (x) { return Array.isArray(x.players) && x.players.length >= 2 && x.players.length <= 4; });
+    o.sessions.forEach(function (x) {
+      if (!CATS[x.category]) x.category = 'eightball';
+      if (!Array.isArray(x.games)) x.games = [];
+      x.games = x.games.map(Number).filter(function (w) { return w >= 0 && w < x.players.length; });
+      x.maxGames = intIn(x.maxGames, 1, 15, 15);
+      if (x.status !== 'done') x.status = 'live';
+      if (typeof x.winnerIdx !== 'number') x.winnerIdx = -1;
+      x.startedAt = Number(x.startedAt) || Date.now();
+    });
     return o;
   }
 
@@ -162,6 +172,7 @@
   }
   function playerInUse(id) {
     return db.matches.some(function (m) { return m.p1 === id || m.p2 === id; }) ||
+      db.sessions.some(function (x) { return x.players.indexOf(id) >= 0; }) ||
       db.tournaments.some(function (t) { return t.playerIds.indexOf(id) >= 0; });
   }
 
@@ -677,6 +688,7 @@
         '<div class="hero-actions">' +
           '<a class="btn btn-primary btn-xl" href="#/play"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>Start Game</a>' +
           '<a class="btn btn-secondary btn-xl" href="#/tournaments/new">New Tournament</a>' +
+          '<a class="btn btn-ghost btn-xl" href="#/free">Free Play · 2–4 players</a>' +
         '</div>' +
         '<ul class="hero-points"><li>No account needed</li><li>Works on phone, tablet &amp; TV</li><li>Undo any mistake</li></ul>' +
       '</div>' +
@@ -698,6 +710,9 @@
           '<div class="cat-card-actions"><a class="btn btn-sm btn-primary" href="#/play?c=' + id + '">Play</a><a class="btn btn-sm btn-ghost" href="#/rules/' + id + '">Rules</a></div></article>';
       }).join('') + '</div></section>';
 
+    var liveFree = db.sessions.filter(function (x) { return x.status === 'live'; });
+    html += '<section class="card fp-cta"><div><span class="eyebrow">Normal play</span><h2>Free Play for 2, 3 or 4 players</h2><p class="muted">Up to 15 games. Press <b>+1 Point</b> for whoever wins each game; the most points wins.</p></div>' +
+      '<div class="row-gap">' + (liveFree.length ? '<a class="btn btn-live" href="#/free/' + liveFree[liveFree.length - 1].id + '">● Resume Free Play</a>' : '') + '<a class="btn btn-primary btn-lg" href="#/free">Start Free Play</a></div></section>';
     html += '<section class="grid-2">';
     html += '<div class="card"><div class="section-head"><h2>Tournaments</h2><a class="link" href="#/tournaments">See all →</a></div>' +
       (activeT.length ? '<ul class="list">' + activeT.slice(0, 5).map(tournamentRow).join('') + '</ul>'
@@ -1213,7 +1228,7 @@
     try { size = new Blob([JSON.stringify(db)]).size; } catch (e) { size = 0; }
     return '<div class="wrap narrow"><header class="page-head"><span class="eyebrow">Your data</span><h1>Backup &amp; restore</h1><p class="muted">There is no login: everything is stored in this browser on this device. Export a backup to move it to another device or keep it safe.</p></header>' +
       (storageOk ? '' : '<div class="card warn-card">This browser is blocking storage (private mode?). Export a backup before closing the tab.</div>') +
-      '<section class="stats-row"><div class="stat"><b>' + db.players.length + '</b><span>players</span></div><div class="stat"><b>' + db.referees.length + '</b><span>referees</span></div><div class="stat"><b>' + db.tournaments.length + '</b><span>tournaments</span></div><div class="stat"><b>' + db.matches.filter(function (m) { return m.status === 'done'; }).length + '</b><span>matches played</span></div></section>' +
+      '<section class="stats-row"><div class="stat"><b>' + db.players.length + '</b><span>players</span></div><div class="stat"><b>' + db.referees.length + '</b><span>referees</span></div><div class="stat"><b>' + db.tournaments.length + '</b><span>tournaments</span></div><div class="stat"><b>' + db.sessions.length + '</b><span>free play games</span></div><div class="stat"><b>' + db.matches.filter(function (m) { return m.status === 'done'; }).length + '</b><span>matches played</span></div></section>' +
       '<section class="card"><h2>Export</h2><p class="muted">Download all players, referees, tournaments and matches as a JSON file (' + Math.max(1, Math.round(size / 1024)) + ' KB).</p><button class="btn btn-primary" data-action="export">⬇ Download backup</button></section>' +
       '<section class="card"><h2>Import</h2><p class="muted">Restore a backup file. This replaces the current data on this device.</p><label class="btn btn-secondary file-btn">⬆ Choose backup file<input type="file" accept="application/json,.json" id="importFile"></label></section>' +
       '<section class="card"><h2>Demo</h2><p class="muted">Add a sample 8-player 9-Ball knockout tournament with two referees.</p><button class="btn btn-secondary" data-action="demo">Load demo tournament</button></section>' +
@@ -1324,6 +1339,7 @@
   var view = $('#view');
   var currentPath = null;
   var currentMatchId = null;
+  var currentFreeId = null;
 
   function parseHash() {
     var h = location.hash.replace(/^#/, '') || '/';
@@ -1348,6 +1364,7 @@
     var mm;
     var leavingMatch = currentMatchId;
     currentMatchId = null;
+    currentFreeId = null;
 
     if (path === '/') { html = viewHome(); nav = 'home'; }
     else if (path === '/play') { html = viewPlay(params); after = afterPlay; nav = ''; }
@@ -1359,6 +1376,8 @@
     else if (path === '/people') { html = viewPeople(); nav = 'people'; }
     else if ((mm = path.match(/^\/rules(?:\/([a-z]+))?$/))) { html = viewRules(mm[1]); nav = 'rules'; }
     else if (path === '/data') { html = viewData(); nav = 'data'; }
+    else if (path === '/free') { html = viewFree(); after = afterFree; nav = 'free'; }
+    else if ((mm = path.match(/^\/free\/([A-Za-z0-9_-]+)$/))) { html = viewFreeBoard(mm[1]); currentFreeId = mm[1]; nav = 'free'; }
     else { html = notFound(); }
 
     if (leavingMatch !== currentMatchId) { clockReset(); }
@@ -1377,7 +1396,7 @@
       a.classList.toggle('active', on);
       if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     });
-    var titles = { home: '', tournaments: 'Tournaments', leaderboard: 'Leaderboard', people: 'Players & Referees', rules: 'Rules', data: 'Data' };
+    var titles = { home: '', free: 'Free Play', tournaments: 'Tournaments', leaderboard: 'Leaderboard', people: 'Players & Referees', rules: 'Rules', data: 'Data' };
     document.title = (currentMatchId ? 'Live score · ' : (titles[nav] ? titles[nav] + ' · ' : (path === '/play' ? 'Start game · ' : ''))) + 'Biliardo Tournament';
 
     if (after) after();
@@ -1385,6 +1404,13 @@
       var m = M(currentMatchId);
       if (m && (m.status === 'live' || m.status === 'done')) startTicker(m);
       paintClock();
+      applyGesture();
+    } else if (currentFreeId && S(currentFreeId)) {
+      var fs = S(currentFreeId);
+      if (fs.status === 'live') ticker = setInterval(function () {
+        var tEl = $('#matchTimer'); var cur = S(fs.id);
+        if (tEl && cur && cur.status === 'live') tEl.textContent = fmtClock(Date.now() - cur.startedAt);
+      }, 500);
       applyGesture();
     } else {
       pendingGesture = null;
@@ -1636,6 +1662,197 @@
   window.addEventListener('hashchange', function () {
     if (dlg && dlg.open) dlg.close('cancel');
     render(false);
+  });
+
+  /* ------------------------------------------------------------------ *
+   * Free Play — 2 to 4 players, up to 15 games, +1 point per game won
+   * ------------------------------------------------------------------ */
+  var FP_MAX_GAMES = 15;
+  function S(id) { return id ? find(db.sessions, id) : null; }
+  function fpPoints(s) {
+    var pts = s.players.map(function () { return 0; });
+    s.games.forEach(function (w) { if (w >= 0 && w < pts.length) pts[w]++; });
+    return pts;
+  }
+  /* indexes of players still allowed to score: everyone during regular games,
+     only the tied leaders during decider games */
+  function fpEligible(s) {
+    var pts = fpPoints(s);
+    if (s.games.length < s.maxGames) return s.players.map(function (_, i) { return i; });
+    var top = Math.max.apply(null, pts);
+    return pts.map(function (p, i) { return p === top ? i : -1; }).filter(function (i) { return i >= 0; });
+  }
+  function fpCheckEnd(s) {
+    if (s.games.length < s.maxGames) return;
+    var lead = fpEligible(s);
+    if (lead.length === 1) {
+      s.status = 'done'; s.winnerIdx = lead[0]; s.endedAt = Date.now();
+      gesture('win', pName(s.players[lead[0]]) + ' wins!');
+      celebrate = true;
+    }
+  }
+  function fpRanking(s) {
+    var pts = fpPoints(s);
+    return s.players.map(function (id, i) { return { i: i, id: id, pts: pts[i] }; })
+      .sort(function (a, b) { return b.pts - a.pts || a.i - b.i; });
+  }
+  function fpSide(s, i) { var n = s.players.length; return i * 2 < n - 1 ? 'left' : 'right'; }
+
+  function viewFree() {
+    var list = db.sessions.slice().sort(function (a, b) { return (b.startedAt || 0) - (a.startedAt || 0); });
+    var gameOpts = '';
+    for (var g = 1; g <= FP_MAX_GAMES; g++) gameOpts += '<option value="' + g + '"' + (g === FP_MAX_GAMES ? ' selected' : '') + '>' + plural(g, 'game', 'games') + '</option>';
+    var html = '<div class="wrap narrow">' +
+      '<header class="page-head"><span class="eyebrow">Normal play</span><h1>Free Play</h1><p class="muted">Casual games for 2, 3 or 4 players. Choose up to 15 games and press <b>+1 Point</b> for the player who wins each game. The most points after the last game wins. If the lead is tied, the tied players play decider games.</p></header>' +
+      '<form class="card form" id="freeForm" autocomplete="off" novalidate>' +
+        '<fieldset><legend>Category</legend>' + catPicker('eightball', 'fpcat') + '</fieldset>' +
+        '<fieldset><legend>Number of players</legend><div class="seg seg-3" role="radiogroup" aria-label="Number of players">' +
+          [2, 3, 4].map(function (n) { return '<label><input type="radio" name="count" value="' + n + '"' + (n === 3 ? ' checked' : '') + '><span><b>' + n + ' players</b></span></label>'; }).join('') +
+        '</div><div class="grid-2">' +
+          [1, 2, 3, 4].map(function (i) { return '<label class="field" data-fp-player="' + i + '"' + (i > 3 ? ' hidden' : '') + '><span>Player ' + i + '</span><input name="p' + i + '" list="dl-players" maxlength="40" placeholder="Name"></label>'; }).join('') +
+        '</div></fieldset>' +
+        '<fieldset><legend>Games &amp; referee</legend><div class="grid-2">' +
+          '<label class="field"><span>Number of games (max 15)</span><select name="games">' + gameOpts + '</select></label>' +
+          '<label class="field"><span>Referee <small class="muted">(optional)</small></span><input name="ref" list="dl-refs" maxlength="40" placeholder="Name"></label>' +
+        '</div></fieldset>' +
+        '<div class="form-actions"><a class="btn btn-ghost" href="#/">Cancel</a><button class="btn btn-primary btn-lg" type="submit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>Start Free Play</button></div>' +
+      '</form>' + datalists();
+    if (list.length) {
+      html += '<section class="card" style="margin-top:20px"><div class="section-head"><h2>Recent Free Play</h2></div><ul class="list">' + list.slice(0, 20).map(function (s) {
+        var r = fpRanking(s);
+        return '<li><a class="t-row" href="#/free/' + s.id + '"><span class="t-row-main"><b>' + esc(s.players.map(pName).join(' · ')) + '</b><small>' + esc(CATS[s.category] ? CATS[s.category].name : '') + ' · ' + s.games.length + '/' + s.maxGames + ' games · ' + esc(fmtDate(s.startedAt)) + '</small></span>' +
+          (s.status === 'done' ? (s.winnerIdx >= 0 ? '<span class="badge badge-gold">🏆 ' + esc(pName(s.players[s.winnerIdx])) + ' ' + r[0].pts + '</span>' : '<span class="badge">Draw</span>') : '<span class="badge badge-live">Live</span>') + '</a></li>';
+      }).join('') + '</ul></section>';
+    }
+    return html + '</div>';
+  }
+  function afterFree() {
+    var f = $('#freeForm'); if (!f) return;
+    fpSyncCount(f);
+    var p1 = $('input[name="p1"]', f); if (p1) p1.focus();
+  }
+  function fpSyncCount(f) {
+    var c = $('input[name="count"]:checked', f); var n = c ? parseInt(c.value, 10) : 3;
+    $$('[data-fp-player]', f).forEach(function (el) { el.hidden = parseInt(el.getAttribute('data-fp-player'), 10) > n; });
+  }
+  function submitFree(f) {
+    var fd = new FormData(f);
+    var catId = CATS[fd.get('fpcat')] ? fd.get('fpcat') : 'eightball';
+    var n = intIn(fd.get('count'), 2, 4, 3);
+    var names = [], seen = {};
+    for (var i = 1; i <= n; i++) {
+      var nm = cleanName(fd.get('p' + i));
+      if (!nm) { toast('Enter a name for Player ' + i + '.', 'warn'); $('input[name="p' + i + '"]', f).focus(); return; }
+      if (seen[nm.toLowerCase()]) { toast('Each player needs a different name.', 'warn'); $('input[name="p' + i + '"]', f).focus(); return; }
+      seen[nm.toLowerCase()] = 1; names.push(nm);
+    }
+    var ref = ensureReferee(fd.get('ref'));
+    var s = {
+      id: uid(), category: catId, players: names.map(function (x) { return ensurePlayer(x).id; }),
+      refId: ref ? ref.id : null, maxGames: intIn(fd.get('games'), 1, FP_MAX_GAMES, FP_MAX_GAMES),
+      games: [], status: 'live', winnerIdx: -1, startedAt: Date.now(), endedAt: null
+    };
+    db.sessions.push(s); save();
+    go('#/free/' + s.id);
+  }
+
+  function viewFreeBoard(id) {
+    var s = S(id); if (!s) return notFound('Free Play game not found');
+    var c = CATS[s.category] || CATS.eightball;
+    var pts = fpPoints(s), done = s.status === 'done';
+    var elig = fpEligible(s);
+    var decider = !done && s.games.length >= s.maxGames;
+    var gameNo = Math.min(s.games.length + 1, s.maxGames);
+    var top = Math.max.apply(null, pts);
+    var html = '<div class="board-wrap"><div class="wrap"><nav class="crumbs"><a href="#/free">Free Play</a><span>/</span><span>' + esc(s.players.map(pName).join(' · ')) + '</span></nav></div>' +
+      '<section class="board fp-board' + (done ? ' board-done' : '') + '">' +
+      '<div class="board-head">' + catBadge(s.category) + '<span class="bh-race">' + (done ? 'Finished · ' + s.games.length + ' games' : decider ? 'Decider game' : 'Game ' + gameNo + ' of ' + s.maxGames) + '</span>' +
+        '<span class="bh-timer">⏱ <b id="matchTimer">' + fmtClock((done ? s.endedAt : Date.now()) - s.startedAt) + '</b></span>' +
+        (done ? '<span class="badge badge-gold">Final</span>' : '<span class="badge badge-live">Live</span>') + '</div>' +
+      '<div class="fp-top"><div class="ref-stage"><div class="bubble" id="refBubble" hidden></div>' + window.BT_REFEREE_SVG({ className: 'g-idle' }) + '</div>' +
+        '<div class="fp-status"><span class="muted tiny">Referee</span><b>' + esc(s.refId ? rName(s.refId) || 'Referee' : 'No referee') + '</b>' +
+        '<p class="fp-msg">' + (done ? (s.winnerIdx >= 0 ? '🏆 <b>' + esc(pName(s.players[s.winnerIdx])) + '</b> wins with ' + plural(pts[s.winnerIdx], 'point', 'points') + '!' : 'Finished as a draw.')
+          : decider ? 'Tie for first! Decider game between ' + esc(elig.map(function (i) { return pName(s.players[i]); }).join(' and ')) + '.'
+          : 'Press <b>+1 Point</b> for the winner of game ' + gameNo + '.') + '</p>' +
+        '<div class="fp-progress" aria-label="Games played">' + (function () {
+          var cells = '', total = Math.max(s.maxGames, s.games.length);
+          for (var g = 0; g < total; g++) {
+            var w = s.games[g];
+            cells += '<span class="fp-cell' + (w != null ? ' fp-c' + (w + 1) : '') + (g >= s.maxGames ? ' fp-extra' : '') + '" title="Game ' + (g + 1) + (w != null ? ': ' + esc(pName(s.players[w])) : '') + '">' + (w != null ? esc(initials(pName(s.players[w]))) : g + 1) + '</span>';
+          }
+          return cells;
+        })() + '</div></div></div>' +
+      '<div class="fp-players fp-n' + s.players.length + '">' + s.players.map(function (pid, i) {
+        var can = !done && elig.indexOf(i) >= 0;
+        var leading = pts[i] === top && top > 0;
+        return '<div class="side fp-side fp-s' + (i + 1) + (done && s.winnerIdx === i ? ' side-win' : '') + (decider && !can ? ' side-lose' : '') + '">' +
+          '<div class="side-head"><span class="avatar fp-av' + (i + 1) + '" aria-hidden="true">' + esc(initials(pName(pid))) + '</span><div class="side-id"><h2 class="side-name">' + esc(pName(pid)) + '</h2>' +
+          '<div class="side-tags">' + (leading && !done ? '<span class="tag tag-win">Leader</span>' : '') + (done && s.winnerIdx === i ? '<span class="tag tag-win">🏆 Winner</span>' : '') + '</div></div></div>' +
+          '<div class="score-big"><span class="score-num">' + pts[i] + '</span><span class="score-label">' + (pts[i] === 1 ? 'point' : 'points') + '</span></div>' +
+          '<button class="btn btn-primary btn-lg btn-block" data-action="fpPoint" data-id="' + s.id + '" data-n="' + i + '"' + (can ? '' : ' disabled') + '>+1 Point</button></div>';
+      }).join('') + '</div>' +
+      '<div class="board-foot"><button class="btn btn-secondary" data-action="fpUndo" data-id="' + s.id + '"' + (s.games.length ? '' : ' disabled') + '>↶ Undo</button>' +
+        (done ? '<button class="btn btn-primary" data-action="fpRematch" data-id="' + s.id + '">Play again</button><a class="btn btn-secondary" href="#/free">New Free Play</a>'
+          : '<button class="btn btn-ghost" data-action="fpFinish" data-id="' + s.id + '">Finish now</button><button class="btn btn-ghost" data-action="fullscreen">⛶ Fullscreen</button>') +
+        '<button class="btn btn-ghost danger-text" data-action="fpDelete" data-id="' + s.id + '">Delete</button></div>' +
+      '</section>';
+    var rank = fpRanking(s);
+    html += '<div class="wrap"><section class="card"><h2>Standings</h2><ol class="mini-board">' + rank.map(function (r, k) {
+      return '<li><span class="rank rank-' + (k + 1) + '">' + (k + 1) + '</span><span class="avatar fp-av' + (r.i + 1) + '" aria-hidden="true">' + esc(initials(pName(r.id))) + '</span><span class="mb-name">' + esc(pName(r.id)) + '</span><span class="mb-pts">' + r.pts + ' pts</span></li>';
+    }).join('') + '</ol></section></div>';
+    return html + '</div>';
+  }
+
+  function fpAction(a, s, n) {
+    if (a === 'fpPoint') {
+      if (s.status !== 'live' || fpEligible(s).indexOf(n) < 0) return;
+      s.games.push(n);
+      gesture(fpSide(s, n), '+1 ' + pName(s.players[n]));
+      fpCheckEnd(s);
+      save(); render(true);
+    } else if (a === 'fpUndo') {
+      if (!s.games.length) return;
+      s.games.pop();
+      s.status = 'live'; s.winnerIdx = -1; s.endedAt = null;
+      save(); toast('Last point undone.'); render(true);
+    } else if (a === 'fpFinish') {
+      confirmDialog('Finish now?', 'End this Free Play after ' + plural(s.games.length, 'game', 'games') + '. The player with the most points wins; a tie is a draw.', 'Finish', false, function () {
+        var r = fpRanking(s);
+        s.status = 'done'; s.endedAt = Date.now();
+        s.winnerIdx = r.length > 1 && r[0].pts === r[1].pts ? -1 : r[0].i;
+        if (s.winnerIdx >= 0) { gesture('win', pName(s.players[s.winnerIdx]) + ' wins!'); celebrate = true; }
+        save(); render(true);
+      });
+    } else if (a === 'fpRematch') {
+      var ns = { id: uid(), category: s.category, players: s.players.slice(), refId: s.refId && R(s.refId) ? s.refId : null, maxGames: s.maxGames, games: [], status: 'live', winnerIdx: -1, startedAt: Date.now(), endedAt: null };
+      db.sessions.push(ns); save(); go('#/free/' + ns.id);
+    } else if (a === 'fpDelete') {
+      confirmDialog('Delete this Free Play?', 'Its score will be removed. This cannot be undone.', 'Delete', true, function () {
+        db.sessions = db.sessions.filter(function (x) { return x.id !== s.id; });
+        save(); toast('Deleted.'); go('#/free');
+      });
+    }
+  }
+  document.addEventListener('click', function (e) {
+    var el = e.target.closest('[data-action^="fp"]');
+    if (!el || el.disabled) return;
+    var s = S(el.getAttribute('data-id')); if (!s) return;
+    fpAction(el.getAttribute('data-action'), s, parseInt(el.getAttribute('data-n'), 10));
+  });
+  document.addEventListener('change', function (e) {
+    if (e.target.name === 'count' && e.target.form && e.target.form.id === 'freeForm') fpSyncCount(e.target.form);
+  });
+  document.addEventListener('submit', function (e) {
+    if (e.target && e.target.id === 'freeForm') submitFree(e.target);
+  });
+  document.addEventListener('keydown', function (e) {
+    if (!currentFreeId || e.ctrlKey || e.metaKey || e.altKey || (dlg && dlg.open)) return;
+    var tag = (document.activeElement && document.activeElement.tagName) || '';
+    if (/INPUT|SELECT|TEXTAREA/.test(tag)) return;
+    var s = S(currentFreeId); if (!s) return;
+    if (e.key === 'z' || e.key === 'u') { e.preventDefault(); fpAction('fpUndo', s); return; }
+    var k = parseInt(e.key, 10);
+    if (k >= 1 && k <= s.players.length) { e.preventDefault(); fpAction('fpPoint', s, k - 1); }
   });
 
   /* keyboard shortcuts on the scoreboard (when no input is focused) */
