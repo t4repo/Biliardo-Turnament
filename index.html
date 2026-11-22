@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Biliardo Tournament</title>
+  <meta name="description" content="Run a billiards tournament in your browser: brackets, round robin, live referee scoring, leaderboard and official rules for 8-Ball, 9-Ball, 10-Ball, Straight Pool, Snooker and 5-Pins. No login needed.">
+  <meta name="theme-color" content="#0a1310">
+  <meta name="color-scheme" content="dark">
+  <meta property="og:title" content="Biliardo Tournament">
+  <meta property="og:description" content="Brackets, live referee scoring, leaderboard and rules for billiards tournaments. No login.">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <a class="skip-link" href="#view">Skip to content</a>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="#/" aria-label="Biliardo Tournament home">
+        <svg class="brand-ball" viewBox="0 0 64 64" aria-hidden="true">
+          <defs><radialGradient id="b8" cx=".35" cy=".3" r=".75"><stop offset="0" stop-color="#4a4f55"/><stop offset=".55" stop-color="#121417"/><stop offset="1" stop-color="#000"/></radialGradient></defs>
+          <circle cx="32" cy="32" r="30" fill="url(#b8)"/>
+          <circle cx="32" cy="30" r="13" fill="#fff"/>
+          <text x="32" y="36" text-anchor="middle" font-family="Arial, sans-serif" font-weight="700" font-size="17" fill="#111">8</text>
+        </svg>
+        <span class="brand-text">Biliardo<b>Tournament</b></span>
+      </a>
+      <nav class="nav" id="nav" aria-label="Main">
+        <a href="#/" data-nav="home">Home</a>
+        <a href="#/tournaments" data-nav="tournaments">Tournaments</a>
+        <a href="#/leaderboard" data-nav="leaderboard">Leaderboard</a>
+        <a href="#/people" data-nav="people">Players &amp; Referees</a>
+        <a href="#/rules" data-nav="rules">Rules</a>
+        <a href="#/data" data-nav="data">Data</a>
+      </nav>
+      <a class="btn btn-primary btn-sm topbar-cta" href="#/play">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>
+        Start Game
+      </a>
+    </div>
+  </header>
+
+  <main id="view" tabindex="-1">
+    <noscript><div class="wrap"><p class="card">This site needs JavaScript enabled to run the tournament.</p></div></noscript>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <span>Biliardo Tournament · no login · data saved on this device</span>
+      <span><a href="#/rules">Rules</a> · <a href="#/data">Backup &amp; restore</a></span>
+    </div>
+  </footer>
+
+  <div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
+  <dialog id="dlg" class="dialog"></dialog>
+  <canvas id="confetti" aria-hidden="true"></canvas>
+
+  <script src="js/rules.js"></script>
+  <script src="js/referee.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
