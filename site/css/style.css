@@ -640,6 +640,26 @@ span.form i.f-L { background: rgba(239, 75, 79, .18); color: var(--red-2); }
 @keyframes hop { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
 @keyframes heroPoint { 0%, 40%, 100% { transform: rotate(0); } 50%, 85% { transform: rotate(118deg); } }
 
+/* ---------- Online sharing ---------- */
+.online-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px 16px; flex-wrap: wrap; padding: 14px 16px; margin: 0 0 20px; border-radius: var(--radius); border: 1px dashed var(--line-2); background: var(--surface); }
+.online-on { border-style: solid; border-color: rgba(54, 197, 130, .35); background: linear-gradient(180deg, rgba(15, 107, 71, .22), var(--surface)); }
+.ob-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 280px; }
+.ob-text b { display: inline-flex; align-items: center; gap: 8px; }
+.ob-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.sync-pill { font-size: 13px; color: var(--muted); }
+.sync-ok { color: var(--green); }
+.sync-syncing { color: var(--gold-2); }
+.sync-error { color: #ffb3b5; }
+.share-block { border: 1px solid var(--line-2); border-radius: 12px; padding: 12px; margin-bottom: 12px; background: var(--bg); }
+.share-block h3 { margin: 0 0 4px; font-size: 15px; }
+.share-block p { margin: 0 0 10px; }
+.share-warn { border-color: rgba(232, 182, 76, .4); }
+.copy-row { display: flex; gap: 8px; }
+.copy-row input { flex: 1; min-width: 0; min-height: 38px; font-size: 13px; padding: 8px 10px; color: var(--muted); }
+.dlg-list { margin: 0 0 4px; padding-left: 20px; color: #c6d6cd; }
+.dlg-list li { margin-bottom: 6px; }
+.live-note { align-self: center; }
+
 /* ---------- Free Play ---------- */
 .seg-3 { grid-template-columns: repeat(3, 1fr); }
 .seg-3 span { align-items: center; }

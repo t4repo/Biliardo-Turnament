@@ -124,15 +124,237 @@
     } catch (e) { storageOk = false; return defaults(); }
   }
   var saveWarned = false;
-  function save() {
+  function saveLocal() {
     try { localStorage.setItem(KEY, JSON.stringify(db)); storageOk = true; }
     catch (e) {
       storageOk = false;
       if (!saveWarned) { saveWarned = true; toast('Could not save to this browser. Data will be lost when the tab closes — export a backup.', 'warn'); }
     }
   }
+  /* every change: stamp what changed, save in this browser, and save online if published */
+  function save() {
+    stamp(false);
+    saveLocal();
+    cloudSchedule();
+  }
 
   var db = load();
+
+  /* ------------------------------------------------------------------ *
+   * Change stamps — every tournament and tournament match carries `upd`,
+   * the time it last changed. Used to merge copies from several devices.
+   * ------------------------------------------------------------------ */
+  var fps = {};
+  function fpOf(o) {
+    var c = {};
+    for (var k in o) if (k !== 'upd' && k !== 'cloud' && k !== 'hist') c[k] = o[k];
+    return JSON.stringify(c);
+  }
+  function stamp(init) {
+    var now = Date.now();
+    function one(key, o) {
+      var h = fpOf(o);
+      if (fps[key] === h) return;
+      if (init) { if (!o.upd) o.upd = o.createdAt || 1; } else o.upd = now;
+      fps[key] = h;
+    }
+    db.tournaments.forEach(function (t) { one('t:' + t.id, t); });
+    db.matches.forEach(function (m) { if (m.tId) one('m:' + m.id, m); });
+  }
+  stamp(true);
+
+  /* ------------------------------------------------------------------ *
+   * Online sharing (Netlify Function /api/t + Netlify Blobs)
+   * t.cloud = { key, role: 'owner' | 'scorer', pushedAt }   (key never leaves this device
+   * except in the scorer link the owner chooses to share)
+   * ------------------------------------------------------------------ */
+  var API = '/api/t';
+  var syncState = {};
+  var pushing = {};
+  var pushTimer = null;
+  var readOnly = false;
+
+  function randomKey() {
+    var a = new Uint8Array(24);
+    (window.crypto || window.msCrypto).getRandomValues(a);
+    return Array.prototype.map.call(a, function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
+  }
+  function api(method, id, body, key) {
+    var opts = { method: method, headers: {}, cache: 'no-store' };
+    if (body) { opts.headers['content-type'] = 'application/json'; opts.body = JSON.stringify(body); }
+    if (key) opts.headers['x-admin-key'] = key;
+    if (location.protocol === 'file:') return Promise.reject(new Error('Online sharing works on the published website, not on a file opened from disk.'));
+    return fetch(API + (id ? '/' + encodeURIComponent(id) : ''), opts).then(function (r) {
+      return r.text().then(function (txt) {
+        var data = null;
+        try { data = JSON.parse(txt); } catch (e) { data = null; }
+        if (!r.ok || !data) {
+          var err = new Error((data && data.error) || (r.status === 404 ? 'Online sharing is not available on this server yet (it needs the Netlify deploy).' : 'Server error (' + r.status + ')'));
+          err.status = r.status; err.notFound = !!(data && r.status === 404);
+          throw err;
+        }
+        return data;
+      });
+    }, function () { throw new Error('No internet connection.'); });
+  }
+  function shareUrl(hash) { return location.origin + location.pathname + hash; }
+  function maxUpd(list) { return list.reduce(function (a, x) { return Math.max(a, x.upd || 0); }, 0); }
+
+  function cloudPayload(t) {
+    var ms = tMatches(t).map(function (m) { var c = {}; for (var k in m) if (k !== 'hist') c[k] = m[k]; return c; });
+    var tc = {}; for (var k in t) if (k !== 'cloud') tc[k] = t[k];
+    var pids = {}, rids = {};
+    t.playerIds.forEach(function (id) { pids[id] = 1; });
+    t.refereeIds.forEach(function (id) { rids[id] = 1; });
+    ms.forEach(function (m) { if (m.p1) pids[m.p1] = 1; if (m.p2) pids[m.p2] = 1; if (m.refId) rids[m.refId] = 1; });
+    return {
+      t: tc, matches: ms,
+      players: db.players.filter(function (p) { return pids[p.id]; }).map(function (p) { return { id: p.id, name: p.name }; }),
+      referees: db.referees.filter(function (r) { return rids[r.id]; }).map(function (r) { return { id: r.id, name: r.name }; })
+    };
+  }
+  function needsPush(t) {
+    if (!t || !t.cloud || !t.cloud.key || t.cloud.gone) return false;
+    var p = t.cloud.pushedAt || 0;
+    return (t.upd || 0) > p || db.matches.some(function (m) { return m.tId === t.id && (m.upd || 0) > p; });
+  }
+  function cloudSchedule(delay) {
+    if (!db.tournaments.some(needsPush)) return;
+    clearTimeout(pushTimer);
+    pushTimer = setTimeout(function () { db.tournaments.filter(needsPush).forEach(cloudPush); }, delay == null ? 600 : delay);
+  }
+  function setSync(id, state, msg) {
+    syncState[id] = { state: state, at: Date.now(), msg: msg || '' };
+    var pill = document.querySelector('[data-sync="' + id + '"]');
+    if (pill) { pill.className = 'sync-pill sync-' + state; pill.textContent = syncText(id); }
+  }
+  function syncText(id) {
+    var s = syncState[id];
+    if (!s) return 'Online';
+    if (s.state === 'syncing') return 'Saving online…';
+    if (s.state === 'error') return '⚠ Not saved online yet — ' + s.msg + ' Will retry.';
+    return 'Saved online ✓ ' + fmtTime(s.at);
+  }
+  function cloudPush(t) {
+    if (pushing[t.id]) { pushing[t.id] = 'again'; return Promise.resolve(); }
+    pushing[t.id] = true;
+    var payload = cloudPayload(t);
+    var sent = Math.max(payload.t.upd || 0, maxUpd(payload.matches));
+    setSync(t.id, 'syncing');
+    return api('PUT', t.id, payload, t.cloud.key).then(function (doc) {
+      var tt = T(t.id);
+      if (!tt || !tt.cloud) return;
+      var changedMeanwhile = pushing[t.id] === 'again';
+      mergeRemote(doc);
+      var serverMax = Math.max((doc.t && doc.t.upd) || 0, maxUpd(doc.matches || []));
+      tt.cloud.pushedAt = Math.max(tt.cloud.pushedAt || 0, changedMeanwhile ? sent : Math.max(sent, serverMax));
+      saveLocal();
+      setSync(t.id, 'ok');
+    }).catch(function (err) {
+      var tt = T(t.id);
+      if (err.status === 403 && tt && tt.cloud) { tt.cloud.gone = true; saveLocal(); setSync(t.id, 'error', 'This device no longer has access.'); return; }
+      setSync(t.id, 'error', err.message);
+      setTimeout(function () { cloudSchedule(0); }, 15000);
+    }).then(function () {
+      var again = pushing[t.id] === 'again';
+      pushing[t.id] = false;
+      if (again) cloudSchedule(200);
+    });
+  }
+
+  /* bring another device's changes into this browser: newest version of each object wins */
+  function mergeRemote(doc, opts) {
+    if (!doc || !doc.t || !doc.t.id) return false;
+    var changed = false;
+    function people(list, arr) {
+      (list || []).forEach(function (p) {
+        if (!p || !p.id) return;
+        var cur = find(arr, p.id), nm = cleanName(p.name);
+        if (!cur) { arr.push({ id: p.id, name: nm || '?', createdAt: Date.now() }); changed = true; }
+        else if (nm && cur.name !== nm) { cur.name = nm; changed = true; }
+      });
+    }
+    people(doc.players, db.players);
+    people(doc.referees, db.referees);
+    var lt = T(doc.t.id);
+    if (!lt) {
+      if (!opts || !opts.cloud) return changed;
+      lt = {}; for (var k in doc.t) lt[k] = doc.t[k];
+      if (!Array.isArray(lt.playerIds)) lt.playerIds = [];
+      if (!Array.isArray(lt.refereeIds)) lt.refereeIds = [];
+      lt.cloud = opts.cloud;
+      db.tournaments.push(lt); changed = true;
+    } else if ((doc.t.upd || 0) > (lt.upd || 0)) {
+      for (var k2 in doc.t) lt[k2] = doc.t[k2];
+      changed = true;
+    }
+    fps['t:' + lt.id] = fpOf(lt);
+    (doc.matches || []).forEach(function (rm) {
+      if (!rm || !rm.id || !CATS[rm.category]) return;
+      var lm = M(rm.id);
+      if (!lm) {
+        lm = {}; for (var k in rm) lm[k] = rm[k];
+        lm.hist = []; if (!Array.isArray(lm.log)) lm.log = [];
+        db.matches.push(lm); changed = true;
+      } else if ((rm.upd || 0) > (lm.upd || 0)) {
+        for (var k3 in rm) lm[k3] = rm[k3];
+        lm.hist = []; if (!Array.isArray(lm.log)) lm.log = [];
+        changed = true;
+      }
+      fps['m:' + lm.id] = fpOf(lm);
+    });
+    /* two devices may each have advanced a different winner into the same next match;
+       rebuild the bracket from finished matches so nobody's winner is lost */
+    if (repairTournament(lt)) { changed = true; stamp(false); cloudSchedule(300); }
+    return changed;
+  }
+
+  /* Make sure every finished match's winner sits in the next round, and the champion /
+     finished state matches the results. Returns true if anything was fixed. */
+  function repairTournament(t) {
+    if (!t) return false;
+    var changed = false, ms = tMatches(t);
+    if (t.format === 'elim') {
+      for (var r = 1; r < t.rounds; r++) {
+        ms.filter(function (m) { return m.round === r && (m.status === 'done' || m.status === 'bye') && m.winnerId; })
+          .forEach(function (m) {
+            if (heldIn(m)) return;
+            var slot = slotPlan(t, r + 1)[m.id];
+            if (slot && slot.m.status === 'pending' && !slot.m['p' + slot.side]) { slot.m['p' + slot.side] = m.winnerId; changed = true; }
+          });
+      }
+      var fin = ms.filter(function (m) { return m.round === t.rounds; })[0];
+      if (fin && fin.status === 'done' && fin.winnerId && (t.championId !== fin.winnerId || t.status !== 'done')) {
+        t.championId = fin.winnerId; t.status = 'done'; t.endedAt = t.endedAt || fin.endedAt; changed = true;
+      }
+    } else if (ms.length && ms.every(function (m) { return m.status === 'done'; }) && t.status !== 'done') {
+      advance(ms[ms.length - 1]); changed = true;
+    }
+    return changed;
+  }
+  function cloudPull(id) {
+    var t = T(id);
+    if (!t || !t.cloud || t.cloud.gone || pushing[id]) return;
+    api('GET', id).then(function (doc) {
+      if (mergeRemote(doc)) {
+        saveLocal();
+        if (!(dlg && dlg.open)) render(true);
+      }
+      if (!needsPush(T(id))) setSync(id, 'ok');
+    }).catch(function (err) {
+      if (err.notFound && T(id) && T(id).cloud) {
+        T(id).cloud.gone = true; saveLocal();
+        toast('This tournament was removed from the web by its organiser.', 'warn');
+        render(true);
+      }
+    });
+  }
+
+  /* polling while a page shows online data (paused when the tab is hidden) */
+  var pollTimer = null, activePoll = null;
+  function startPoll(fn, ms) { stopPoll(); pollTimer = setInterval(function () { if (!document.hidden) fn(); }, ms); }
+  function stopPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+  window.addEventListener('online', function () { cloudSchedule(0); });
 
   /* ------------------------------------------------------------------ *
    * Lookups
@@ -741,6 +963,8 @@
     var liveFree = db.sessions.filter(function (x) { return x.status === 'live'; });
     html += '<section class="card fp-cta"><div><span class="eyebrow">Normal play</span><h2>Free Play for 2, 3 or 4 players</h2><p class="muted">Press <b>+1 Point</b> for whoever wins each game. The first player to reach the target (up to 15) wins.</p></div>' +
       '<div class="row-gap">' + (liveFree.length ? '<a class="btn btn-live" href="#/free/' + liveFree[liveFree.length - 1].id + '">● Resume Free Play</a>' : '') + '<a class="btn btn-primary btn-lg" href="#/free">Start Free Play</a></div></section>';
+    html += '<section class="card fp-cta"><div><span class="eyebrow">Open to everyone</span><h2>Tournament history</h2><p class="muted">Follow published tournaments live — wins, points and brackets — from any phone. No login.</p></div>' +
+      '<div class="row-gap"><a class="btn btn-secondary btn-lg" href="#/history">🌐 View history</a></div></section>';
     html += '<section class="grid-2">';
     html += '<div class="card"><div class="section-head"><h2>Tournaments</h2><a class="link" href="#/tournaments">See all →</a></div>' +
       (activeT.length ? '<ul class="list">' + activeT.slice(0, 5).map(tournamentRow).join('') + '</ul>'
@@ -1274,6 +1498,11 @@
     var elim = t && t.format === 'elim';
     var action = '';
     if (bye) action = '<span class="badge">Bye</span>';
+    else if (readOnly) {
+      action = m.status === 'live' ? '<a class="btn btn-sm btn-live" href="#/live/' + t.id + '/m/' + m.id + '">● Watch live</a>'
+        : done ? '<a class="btn btn-sm btn-ghost" href="#/live/' + t.id + '/m/' + m.id + '">Details</a>'
+        : '<span class="muted tiny">' + (m.p1 && m.p2 ? 'Not started' : 'Waiting') + '</span>';
+    }
     else if (m.status === 'live') action = '<a class="btn btn-sm btn-live" href="#/match/' + m.id + '">● Resume</a>';
     else if (done) action = '<a class="btn btn-sm btn-ghost" href="#/match/' + m.id + '">View</a>';
     else if (m.p1 && m.p2) action = '<span class="mc-actions"><button class="btn btn-sm btn-ghost" data-action="setResult" data-id="' + m.id + '" title="Enter the result without live scoring">Result</button><button class="btn btn-sm btn-primary" data-action="startMatch" data-id="' + m.id + '">Start</button></span>';
@@ -1290,29 +1519,34 @@
     var real = ms.filter(function (m) { return m.status !== 'bye'; });
     var done = real.filter(function (m) { return m.status === 'done'; }).length;
     var tab = params.tab === 'standings' || params.tab === 'info' ? params.tab : 'matches';
+    var base = readOnly ? '#/live/' + t.id : '#/t/' + t.id;
     var html = '<div class="wrap">' +
-      '<nav class="crumbs"><a href="#/tournaments">Tournaments</a><span>/</span><span>' + esc(t.name) + '</span></nav>' +
+      (readOnly ? '<nav class="crumbs"><a href="#/history">Tournament history</a><span>/</span><span>' + esc(t.name) + '</span></nav>'
+        : '<nav class="crumbs"><a href="#/tournaments">Tournaments</a><span>/</span><span>' + esc(t.name) + '</span></nav>') +
       '<header class="page-head row-between"><div>' + catBadge(t.category) + '<h1>' + esc(t.name) + '</h1>' +
         '<p class="muted">' + (t.format === 'elim' ? 'Knockout' : 'Round robin') + ' · ' + plural(t.playerIds.length, 'player', 'players') + ' · ' + esc(raceLabel({ category: t.category, raceTo: t.raceTo, target: t.target })) + (CATS[t.category].mode === 'race' ? ' · ' + (t.breakRule === 'winner' ? 'Winner breaks' : 'Alternate break') : '') + '</p></div>' +
         '<div class="head-stat"><b>' + done + '<small>/' + real.length + '</small></b><span>matches played</span></div></header>';
+
+    html += readOnly ? liveBar(t) : onlineBar(t);
 
     if (t.status === 'done' && t.championId) {
       html += '<section class="champion"><div class="champion-trophy" aria-hidden="true">🏆</div><div><span class="eyebrow">Champion</span><h2>' + esc(pName(t.championId)) + '</h2><p class="muted">' + esc(t.name) + ' · ' + esc(CATS[t.category].name) + (t.endedAt ? ' · ' + esc(fmtDate(t.endedAt)) : '') + '</p></div></section>';
     }
 
     html += '<div class="tabs" role="tablist">' +
-      tabLink('#/t/' + t.id, 'matches', tab, t.format === 'elim' ? 'Bracket' : 'Schedule') +
-      tabLink('#/t/' + t.id + '?tab=standings', 'standings', tab, 'Standings') +
-      tabLink('#/t/' + t.id + '?tab=info', 'info', tab, 'Info & referees') + '</div>';
+      tabLink(base, 'matches', tab, t.format === 'elim' ? 'Bracket' : 'Schedule') +
+      tabLink(base + '?tab=standings', 'standings', tab, 'Standings') +
+      tabLink(base + '?tab=info', 'info', tab, readOnly ? 'Info' : 'Info & referees') + '</div>';
 
     if (tab === 'matches') {
       if (t.format === 'elim') {
-        html += '<p class="bracket-help muted small">Winners move on automatically, following the <b>Winner →</b> label on each match. Use <b>✎ Edit pairings</b> to choose who plays who before a round starts, or <b>Result</b> to enter a winner without live scoring.</p>';
+        html += readOnly ? '<p class="bracket-help muted small">Winners move on automatically, following the <b>Winner →</b> label on each match. Tap a live match to follow the score.</p>'
+          : '<p class="bracket-help muted small">Winners move on automatically, following the <b>Winner →</b> label on each match. Use <b>✎ Edit pairings</b> to choose who plays who before a round starts, or <b>Result</b> to enter a winner without live scoring.</p>';
         html += '<div class="bracket" style="--rounds:' + t.rounds + '">';
         for (var r = 1; r <= t.rounds; r++) {
           var rm = ms.filter(function (m) { return m.round === r; });
           html += '<div class="b-round"><h3 class="b-round-title">' + esc(roundName(t, r)) + '</h3>' +
-            (roundEditable(t, r) ? '<button class="btn btn-sm btn-secondary b-edit" data-action="editPairs" data-id="' + t.id + '" data-n="' + r + '">✎ Edit pairings</button>' : '') +
+            (!readOnly && roundEditable(t, r) ? '<button class="btn btn-sm btn-secondary b-edit" data-action="editPairs" data-id="' + t.id + '" data-n="' + r + '">✎ Edit pairings</button>' : '') +
             '<div class="b-matches">' + rm.map(function (m) { return '<div class="b-slot">' + matchCard(m, t) + '</div>'; }).join('') + '</div></div>';
         }
         html += '</div>';
@@ -1323,7 +1557,7 @@
           list.forEach(function (m) { playing[m.p1] = 1; playing[m.p2] = 1; });
           var resting = t.playerIds.filter(function (pid) { return !playing[pid]; });
           html += '<section class="rr-round"><div class="rr-head"><h3>Round ' + rr + (resting.length ? ' <small class="muted">· rest: ' + esc(resting.map(pName).join(', ')) + '</small>' : '') + '</h3>' +
-            (roundEditable(t, rr) ? '<button class="btn btn-sm btn-secondary" data-action="editPairs" data-id="' + t.id + '" data-n="' + rr + '">✎ Edit pairings</button>' : '') + '</div><div class="grid-cards">' + list.map(function (m) { return matchCard(m, t); }).join('') + '</div></section>';
+            (!readOnly && roundEditable(t, rr) ? '<button class="btn btn-sm btn-secondary" data-action="editPairs" data-id="' + t.id + '" data-n="' + rr + '">✎ Edit pairings</button>' : '') + '</div><div class="grid-cards">' + list.map(function (m) { return matchCard(m, t); }).join('') + '</div></section>';
         }
       }
     } else if (tab === 'standings') {
@@ -1333,10 +1567,10 @@
       ms.forEach(function (m) { if (m.refId && m.status !== 'pending' && m.status !== 'bye') refStats[m.refId] = (refStats[m.refId] || 0) + 1; });
       html += '<div class="grid-2"><section class="card"><h2>Referees</h2>' +
         (t.refereeIds.length ? '<ul class="list ref-list">' + t.refereeIds.map(function (rid) { return '<li>' + window.BT_REFEREE_SVG({ className: 'ref-mini' }) + '<b>' + esc(rName(rid) || 'Removed referee') + '</b><span class="muted small">' + plural(refStats[rid] || 0, 'match', 'matches') + '</span></li>'; }).join('') + '</ul>' : '<p class="muted">No referees assigned. You can still pick any referee when starting a match.</p>') +
-        '<form class="inline-form" id="addTRef"><input name="ref" list="dl-refs" maxlength="40" placeholder="Add referee name" aria-label="Referee name"><button class="btn btn-secondary btn-sm" type="submit">Add</button></form></section>' +
+        (readOnly ? '' : '<form class="inline-form" id="addTRef"><input name="ref" list="dl-refs" maxlength="40" placeholder="Add referee name" aria-label="Referee name"><button class="btn btn-secondary btn-sm" type="submit">Add</button></form>') + '</section>' +
         '<section class="card"><h2>Rules & format</h2><p>' + esc(window.BT_RULES[t.category].tagline) + '</p><p><a class="btn btn-secondary btn-sm" href="#/rules/' + t.category + '">Read ' + esc(CATS[t.category].name) + ' rules</a></p>' +
-        '<h3>Players (seeding order)</h3><ol class="seed-list">' + t.playerIds.map(function (pid) { return '<li>' + esc(pName(pid)) + '</li>'; }).join('') + '</ol></section></div>' +
-        '<section class="card danger-zone"><h2>Danger zone</h2><p class="muted">Deleting removes this tournament and all of its matches from the leaderboard.</p><button class="btn btn-danger" data-action="deleteTournament" data-id="' + t.id + '">Delete tournament</button></section>' + datalists();
+        '<h3>Players (seeding order)</h3><ol class="seed-list">' + t.playerIds.map(function (pid) { return '<li>' + esc(pName(pid)) + '</li>'; }).join('') + '</ol></section></div>';
+      if (!readOnly) html += '<section class="card danger-zone"><h2>Danger zone</h2><p class="muted">Deleting removes this tournament and all of its matches from the leaderboard.</p><button class="btn btn-danger" data-action="deleteTournament" data-id="' + t.id + '">Delete tournament</button></section>' + datalists();
     }
     return html + '</div>';
   }
@@ -1398,12 +1632,13 @@
   function viewMatch(id) {
     var m = M(id); if (!m) return notFound('Match not found');
     var c = cat(m), t = T(m.tId);
-    var crumbs = '<nav class="crumbs">' + (t ? '<a href="#/tournaments">Tournaments</a><span>/</span><a href="#/t/' + t.id + '">' + esc(t.name) + '</a><span>/</span><span>' + esc(roundName(t, m.round)) + '</span>' : '<a href="#/">Home</a><span>/</span><span>Quick game</span>') + '</nav>';
+    var crumbs = '<nav class="crumbs">' + (readOnly && t ? '<a href="#/history">Tournament history</a><span>/</span><a href="#/live/' + t.id + '">' + esc(t.name) + '</a><span>/</span><span>' + esc(roundName(t, m.round)) + '</span>'
+      : t ? '<a href="#/tournaments">Tournaments</a><span>/</span><a href="#/t/' + t.id + '">' + esc(t.name) + '</a><span>/</span><span>' + esc(roundName(t, m.round)) + '</span>' : '<a href="#/">Home</a><span>/</span><span>Quick game</span>') + '</nav>';
 
     if (m.status === 'pending' || m.status === 'bye') {
       return '<div class="wrap narrow">' + crumbs + '<div class="card center-card">' + window.BT_REFEREE_SVG({ className: 'g-idle ref-lg' }) +
         '<h1>' + esc(sideName(m, 1)) + ' <span class="muted">vs</span> ' + esc(sideName(m, 2)) + '</h1><p class="muted">' + esc(c.name) + ' · ' + esc(raceLabel(m)) + '</p>' +
-        (m.status === 'bye' ? '<p>This is a bye — the player advances automatically.</p>' : (m.p1 && m.p2 ? '<button class="btn btn-primary btn-lg" data-action="startMatch" data-id="' + m.id + '">Start match</button>' : '<p class="muted">Waiting for the previous round to finish.</p>')) + '</div></div>';
+        (m.status === 'bye' ? '<p>This is a bye — the player advances automatically.</p>' : readOnly ? '<p class="muted">This match hasn’t started yet. This page updates automatically.</p>' : (m.p1 && m.p2 ? '<button class="btn btn-primary btn-lg" data-action="startMatch" data-id="' + m.id + '">Start match</button>' : '<p class="muted">Waiting for the previous round to finish.</p>')) + '</div></div>';
     }
 
     var done = m.status === 'done';
@@ -1413,7 +1648,7 @@
         '<span class="bh-timer" title="Match time">⏱ <b id="matchTimer">' + fmtClock((done ? m.endedAt : Date.now()) - (m.startedAt || Date.now())) + '</b></span>' +
         (done ? '<span class="badge badge-gold">Final</span>' : '<span class="badge badge-live">Live</span>') + '</div>' +
       '<div class="board-main">' + sidePanel(m, 1) + centerPanel(m) + sidePanel(m, 2) + '</div>' +
-      boardFoot(m) +
+      (readOnly ? '<div class="board-foot"><a class="btn btn-secondary" href="#/live/' + (t ? t.id : '') + '">← Back to tournament</a><span class="muted small live-note">' + (done ? 'Final result' : '● Live — updates automatically') + '</span></div>' : boardFoot(m)) +
       '</section>';
 
     html += '<div class="wrap board-bottom"><section class="card"><div class="section-head"><h2>Match log</h2><span class="muted small">' + plural(m.log.length, 'entry', 'entries') + '</span></div>' +
@@ -1443,6 +1678,7 @@
       (c.threeFoul ? '<span class="cf" title="Consecutive fouls">' + [1, 2, 3].map(function (i) { return '<i class="' + (i <= cf ? 'on' : '') + '"></i>'; }).join('') + '</span>' : '') +
       (c.mode !== 'race' ? '<span>Total <b>' + m['tp' + s] + '</b></span>' : '') + '</div>';
 
+    if (readOnly) return html + '</div>';
     html += '<div class="side-actions">';
     var a = function (op, label, cls, n, title) {
       return '<button class="btn ' + (cls || 'btn-secondary') + '" data-action="sb" data-op="' + op + '" data-side="' + s + '"' + (n != null ? ' data-n="' + n + '"' : '') + (title ? ' title="' + esc(title) + '"' : '') + dis + '>' + label + '</button>';
@@ -1482,9 +1718,9 @@
     if (c.mode === 'frames' && !done) {
       var diff = Math.abs(m.g1 - m.g2);
       html += '<div class="frame-info muted small">' + (m.g1 === m.g2 ? 'Frame level' : sideName(m, m.g1 > m.g2 ? 1 : 2) + ' leads by ' + diff) + '</div>' +
-        '<button class="btn btn-secondary btn-block" data-action="sb" data-op="endframe" data-side="1">End Frame</button>';
+        (readOnly ? '' : '<button class="btn btn-secondary btn-block" data-action="sb" data-op="endframe" data-side="1">End Frame</button>');
     }
-    if (!done) {
+    if (!done && !readOnly) {
       html += '<div class="shot-clock" id="shotClock"><div class="sc-face"><span id="scVal">' + Math.ceil(clock.remaining) + '</span><small>shot clock</small></div>' +
         '<div class="sc-btns"><button class="btn btn-sm btn-secondary" data-action="clock" data-op="toggle" id="scToggle">' + (clock.running ? 'Pause' : 'Start') + '</button>' +
         '<button class="btn btn-sm btn-ghost" data-action="clock" data-op="reset" title="Reset to ' + clock.base + ' seconds">Reset</button>' +
@@ -1506,6 +1742,189 @@
     if (t) html += '<button class="btn btn-ghost danger-text" data-action="resetMatch" data-id="' + m.id + '">Reset match</button>';
     else html += '<button class="btn btn-ghost danger-text" data-action="deleteMatch" data-id="' + m.id + '">Delete game</button>';
     return html + '</div>';
+  }
+
+  /* ---- Online: bars, publish & share, join, history, live view ---- */
+  function onlineBar(t) {
+    if (t.cloud && t.cloud.key && !t.cloud.gone) {
+      return '<section class="online-bar online-on"><div class="ob-text"><b>🌐 Online' + (t.cloud.role === 'scorer' ? ' · you are a scorer' : '') + '</b>' +
+        '<span class="sync-pill sync-' + ((syncState[t.id] || {}).state || 'ok') + '" data-sync="' + t.id + '">' + esc(syncText(t.id)) + '</span></div>' +
+        '<div class="ob-actions"><a class="btn btn-sm btn-ghost" href="#/live/' + t.id + '" target="_blank" rel="noopener">Public page ↗</a>' +
+        '<button class="btn btn-sm btn-primary" data-action="share" data-id="' + t.id + '">Share links</button></div></section>';
+    }
+    if (t.cloud && t.cloud.gone) {
+      return '<section class="online-bar"><div class="ob-text"><b>Not online any more</b><span class="muted small">The online copy was removed or this device lost access. Your copy on this device is safe.</span></div>' +
+        '<div class="ob-actions"><button class="btn btn-sm btn-secondary" data-action="publish" data-id="' + t.id + '">🌐 Publish again</button></div></section>';
+    }
+    return '<section class="online-bar"><div class="ob-text"><b>Only on this device</b><span class="muted small">Publish it to save it on the web: anyone with the link can follow wins and points live, and it stays in the public tournament history.</span></div>' +
+      '<div class="ob-actions"><button class="btn btn-sm btn-primary" data-action="publish" data-id="' + t.id + '">🌐 Publish online</button></div></section>';
+  }
+  var liveInfo = { at: 0, own: false };
+  function liveBar(t) {
+    return '<section class="online-bar online-on"><div class="ob-text"><b><span class="live-dot"></span> Live view</b>' +
+      '<span class="muted small">Updated ' + esc(fmtTime(liveInfo.at)) + ' · refreshes automatically</span></div>' +
+      '<div class="ob-actions">' + (liveInfo.own ? '<a class="btn btn-sm btn-secondary" href="#/t/' + t.id + '">Open scorer view</a>' : '') +
+      '<button class="btn btn-sm btn-ghost" data-action="copyLink" data-link="' + esc(shareUrl('#/live/' + t.id)) + '">Copy link</button></div></section>';
+  }
+
+  function publishTournament(t) {
+    if (!t) return;
+    if (t.cloud && t.cloud.key && !t.cloud.gone) { openShareDialog(t); return; }
+    openDialog({
+      title: 'Publish “' + t.name + '” online?',
+      body: '<p>The tournament will be saved on the web. Then:</p><ul class="dlg-list">' +
+        '<li><b>Anyone with the link</b> can follow the bracket, wins and points live — no login.</li>' +
+        '<li>It appears in the public <b>Tournament history</b> on this website.</li>' +
+        '<li>You can give a <b>scorer link</b> to referees so they can enter scores from their own phones.</li>' +
+        '<li>Only player and referee names and the scores are shared.</li></ul>',
+      ok: '🌐 Publish',
+      onOk: function () {
+        var hadCloud = t.cloud;
+        t.cloud = { key: randomKey(), role: 'owner', pushedAt: 0 };
+        setSync(t.id, 'syncing');
+        render(true);
+        cloudPushFirst(t, hadCloud);
+      }
+    });
+  }
+  function cloudPushFirst(t, previous) {
+    pushing[t.id] = true;
+    api('PUT', t.id, cloudPayload(t), t.cloud.key).then(function (doc) {
+      mergeRemote(doc);
+      t.cloud.pushedAt = Math.max(t.upd || 0, maxUpd(tMatches(t)));
+      saveLocal();
+      setSync(t.id, 'ok');
+      render(true);
+      toast('Published! Share the links so others can follow.');
+      openShareDialog(t);
+    }).catch(function (err) {
+      t.cloud = previous && previous.gone ? previous : undefined;
+      if (!t.cloud) delete t.cloud;
+      saveLocal();
+      delete syncState[t.id];
+      render(true);
+      toast('Could not publish: ' + err.message, 'warn');
+    }).then(function () { pushing[t.id] = false; cloudSchedule(200); });
+  }
+
+  function openShareDialog(t) {
+    var viewer = shareUrl('#/live/' + t.id);
+    var scorer = shareUrl('#/join/' + t.id + '/' + t.cloud.key);
+    openDialog({
+      title: 'Share “' + t.name + '”',
+      body: '<div class="share-block"><h3>👀 Follow live (anyone)</h3><p class="muted small">Players, fans and family can watch the bracket, wins and points update live. They can’t change anything.</p>' +
+          '<div class="copy-row"><input readonly value="' + esc(viewer) + '" aria-label="Viewer link"><button type="button" class="btn btn-sm btn-primary" data-copy="' + esc(viewer) + '">Copy</button></div></div>' +
+        '<div class="share-block share-warn"><h3>✍️ Scorer access</h3><p class="muted small">Give this only to people you trust, like referees. Anyone with this link can enter and change scores and pairings.</p>' +
+          '<div class="copy-row"><input readonly value="' + esc(scorer) + '" aria-label="Scorer link"><button type="button" class="btn btn-sm btn-secondary" data-copy="' + esc(scorer) + '">Copy</button></div></div>' +
+        (t.cloud.role === 'owner' ? '<p class="muted small">To take it off the web, delete the tournament (Info tab → Danger zone) and choose to remove the online copy.</p>' : ''),
+      ok: 'Done', cancel: false
+    });
+    var form = $('#dlg form');
+    if (form) form.addEventListener('click', function (e) {
+      var b = e.target.closest('[data-copy]'); if (!b) return;
+      copyText(b.getAttribute('data-copy'), b.parentNode.querySelector('input'));
+    });
+  }
+  function copyText(text, input) {
+    function fallback() {
+      if (input) { input.focus(); input.select(); }
+      try { document.execCommand('copy'); toast('Link copied.'); } catch (e) { toast('Select the link and copy it.'); }
+    }
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(function () { toast('Link copied.'); }, fallback);
+    else fallback();
+  }
+
+  /* ---- Join as scorer ---- */
+  function viewJoin(id, key) {
+    var t = T(id);
+    if (t && t.cloud && t.cloud.key === key) return '<div class="wrap narrow"><div class="card center-card"><h1>You already have access</h1><a class="btn btn-primary" href="#/t/' + esc(id) + '">Open the tournament</a></div></div>';
+    return '<div class="wrap narrow"><div class="card center-card">' + window.BT_REFEREE_SVG({ className: 'g-idle ref-lg' }) +
+      '<h1>Join as scorer</h1><p class="muted">You were invited to enter scores for a tournament. It will be added to this device and every score you enter is saved online for everyone following it.</p>' +
+      '<button class="btn btn-primary btn-lg" data-action="joinNow" data-id="' + esc(id) + '" data-key="' + esc(key) + '">Join tournament</button>' +
+      '<a class="btn btn-ghost" href="#/live/' + esc(id) + '">Just watch instead</a></div></div>';
+  }
+  function joinTournament(id, key) {
+    toast('Joining…');
+    var existedBefore = !!T(id);
+    api('GET', id).then(function (doc) {
+      var t = T(id);
+      if (t) { t.cloud = { key: key, role: (t.cloud && t.cloud.role) || 'scorer', pushedAt: 0 }; }
+      mergeRemote(doc, { cloud: { key: key, role: 'scorer', pushedAt: 0 } });
+      t = T(id);
+      if (!t) throw new Error('Could not load the tournament.');
+      t.cloud.pushedAt = Math.max(t.upd || 0, maxUpd(tMatches(t)));
+      saveLocal();
+      /* check the key really works before calling it done */
+      return api('PUT', id, cloudPayload(t), key).then(function (doc2) {
+        mergeRemote(doc2); saveLocal(); setSync(id, 'ok');
+        toast('You can now enter scores for ' + t.name + '.');
+        location.replace('#/t/' + id);
+      }, function (err) {
+        if (err.status === 403) {
+          if (existedBefore) t.cloud.gone = true;
+          else {
+            db.matches = db.matches.filter(function (x) { return x.tId !== id; });
+            db.tournaments = db.tournaments.filter(function (x) { return x.id !== id; });
+          }
+          saveLocal();
+          throw new Error('This scorer link is not valid any more.');
+        }
+        throw err;
+      });
+    }).catch(function (err) { toast('Could not join: ' + err.message, 'warn'); });
+  }
+
+  /* ---- Public history & live pages ---- */
+  var historyCache = null;
+  function viewHistory() {
+    var c = historyCache;
+    var html = '<div class="wrap"><header class="page-head row-between"><div><span class="eyebrow">Open to everyone</span><h1>Tournament history</h1>' +
+      '<p class="muted">Tournaments published on this website. Open one to follow the bracket, wins and points live.</p></div>' +
+      '<button class="btn btn-ghost" data-action="refreshHistory">↻ Refresh</button></header>';
+    if (!c) return html + '<div class="card center-card"><p class="muted">Loading tournaments…</p></div></div>';
+    if (c.error) return html + '<div class="card warn-card">' + esc(c.error) + '</div></div>';
+    if (!c.list.length) return html + emptyState('No published tournaments yet', 'Open a tournament and press “Publish online” to add it here.', '<a class="btn btn-primary" href="#/tournaments">My tournaments</a>') + '</div>';
+    html += '<div class="grid-cards">' + c.list.map(function (s) {
+      var cat0 = CATS[s.category];
+      var pct = s.total ? Math.round(s.played / s.total * 100) : 0;
+      return '<a class="t-card" href="#/live/' + esc(s.id) + '"><div class="t-card-top">' + (cat0 ? catBadge(s.category) : '') +
+        (s.status === 'done' ? '<span class="badge badge-gold">Finished</span>' : s.live ? '<span class="badge badge-live">' + s.live + ' live</span>' : '<span class="badge">In progress</span>') + '</div>' +
+        '<h3>' + esc(s.name) + '</h3><p class="muted small">' + (s.format === 'elim' ? 'Knockout' : 'Round robin') + ' · ' + plural(s.players || 0, 'player', 'players') + '</p>' +
+        (s.status === 'done' && s.champion ? '<p class="champ-line">🏆 ' + esc(s.champion) + '</p>' : '<div class="progress progress-wide"><span style="width:' + pct + '%"></span></div><p class="muted small">' + s.played + ' / ' + s.total + ' matches played</p>') +
+        '<p class="muted tiny">Updated ' + esc(fmtDate(s.updatedAt)) + ' ' + esc(fmtTime(s.updatedAt)) + '</p></a>';
+    }).join('') + '</div>';
+    return html + '</div>';
+  }
+  function loadHistory() {
+    api('GET').then(function (d) { historyCache = { list: Array.isArray(d.list) ? d.list : [], at: Date.now() }; })
+      .catch(function (err) { historyCache = { list: [], error: err.message, at: Date.now() }; })
+      .then(function () { if (parseHash().path === '/history') render(true); });
+  }
+
+  var liveCache = {};
+  function viewLive(id, params, mid) {
+    var c = liveCache[id];
+    if (!c) return '<div class="wrap narrow"><div class="card center-card" style="margin-top:24px"><span class="live-dot"></span><p class="muted">Loading live tournament…</p></div></div>';
+    if (!c.doc) return '<div class="wrap narrow">' + emptyState('Tournament not available', c.error || 'It may have been removed.', '<a class="btn btn-primary" href="#/history">Tournament history</a>') + '</div>';
+    var local = T(id);
+    liveInfo = { at: c.at, own: !!(local && local.cloud && local.cloud.key && !local.cloud.gone) };
+    var saved = db, ro = readOnly;
+    db = normalize({ players: c.doc.players, referees: c.doc.referees, tournaments: [c.doc.t], matches: c.doc.matches });
+    readOnly = true;
+    try {
+      if (!T(id)) return notFound('Tournament not found');
+      repairTournament(T(id));
+      return (c.error ? '<div class="wrap"><div class="card warn-card" style="margin-top:12px">Connection problem — showing the last scores we received. ' + esc(c.error) + '</div></div>' : '') +
+        (mid ? viewMatch(mid) : viewTournament(id, params));
+    } finally { db = saved; readOnly = ro; }
+  }
+  function liveFetch(id) {
+    return api('GET', id).then(function (doc) { liveCache[id] = { doc: doc, at: Date.now() }; })
+      .catch(function (err) { var old = liveCache[id]; liveCache[id] = { doc: old && old.doc, at: old ? old.at : Date.now(), error: err.message }; })
+      .then(function () {
+        var p = parseHash().path;
+        if ((p === '/live/' + id || p.indexOf('/live/' + id + '/') === 0) && !(dlg && dlg.open)) render(true);
+      });
   }
 
   /* ---- Leaderboard ---- */
@@ -1754,7 +2173,22 @@
     else if (path === '/data') { html = viewData(); nav = 'data'; }
     else if (path === '/free') { html = viewFree(); after = afterFree; nav = 'free'; }
     else if ((mm = path.match(/^\/free\/([A-Za-z0-9_-]+)$/))) { html = viewFreeBoard(mm[1]); currentFreeId = mm[1]; nav = 'free'; }
+    else if (path === '/history') { html = viewHistory(); nav = 'history'; if (!historyCache || (!inPlace && Date.now() - historyCache.at > 5000)) loadHistory(); }
+    else if ((mm = path.match(/^\/live\/([A-Za-z0-9_-]+)(?:\/m\/([A-Za-z0-9_-]+))?$/))) {
+      html = viewLive(mm[1], params, mm[2]); nav = 'history';
+      if (!liveCache[mm[1]] || !inPlace) liveFetch(mm[1]);
+    }
+    else if ((mm = path.match(/^\/join\/([A-Za-z0-9_-]+)\/([A-Za-z0-9]+)$/))) { html = viewJoin(mm[1], mm[2]); nav = 'tournaments'; }
     else { html = notFound(); }
+
+    /* keep online data fresh on the pages that show it */
+    var pollKey = null, pollFn = null, pollMs = 0;
+    var liveM = path.match(/^\/live\/([A-Za-z0-9_-]+)/);
+    var ownT = (mm = path.match(/^\/t\/([A-Za-z0-9_-]+)$/)) ? T(mm[1]) : (currentMatchId && M(currentMatchId) ? T(M(currentMatchId).tId) : null);
+    if (liveM) { pollKey = 'live:' + liveM[1]; pollMs = path.indexOf('/m/') > 0 ? 4000 : 8000; pollFn = (function (id) { return function () { liveFetch(id); }; })(liveM[1]); }
+    else if (ownT && ownT.cloud && ownT.cloud.key && !ownT.cloud.gone) { pollKey = 'own:' + ownT.id; pollMs = 10000; pollFn = (function (id) { return function () { cloudPull(id); }; })(ownT.id); }
+    if (pollKey !== activePoll) { stopPoll(); activePoll = pollKey; if (pollFn) startPoll(pollFn, pollMs); }
+    if (ownT && needsPush(ownT)) cloudSchedule(0);
 
     if (leavingMatch !== currentMatchId) { clockReset(); }
     stopTicker();
@@ -1772,7 +2206,7 @@
       a.classList.toggle('active', on);
       if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     });
-    var titles = { home: '', free: 'Free Play', tournaments: 'Tournaments', leaderboard: 'Leaderboard', people: 'Players & Referees', rules: 'Rules', data: 'Data' };
+    var titles = { home: '', history: 'Tournament history', free: 'Free Play', tournaments: 'Tournaments', leaderboard: 'Leaderboard', people: 'Players & Referees', rules: 'Rules', data: 'Data' };
     document.title = (currentMatchId ? 'Live score · ' : (titles[nav] ? titles[nav] + ' · ' : (path === '/play' ? 'Start game · ' : ''))) + 'Biliardo Tournament';
 
     if (after) after();
@@ -1906,13 +2340,37 @@
       }
       case 'deleteTournament': {
         var t = T(id); if (!t) return;
-        confirmDialog('Delete “' + t.name + '”?', 'The tournament and all its matches will be deleted. Players stay in the roster.', 'Delete tournament', true, function () {
+        var isOwnerOnline = t.cloud && t.cloud.key && t.cloud.role === 'owner' && !t.cloud.gone;
+        var removeLocal = function () {
           db.matches = db.matches.filter(function (x) { return x.tId !== t.id; });
           db.tournaments = db.tournaments.filter(function (x) { return x.id !== t.id; });
-          save(); toast('Tournament deleted.'); go('#/tournaments');
+          save(); go('#/tournaments');
+        };
+        if (!isOwnerOnline) {
+          confirmDialog('Delete “' + t.name + '”?', 'The tournament and all its matches will be deleted from this device. Players stay in the roster.' + (t.cloud && t.cloud.role === 'scorer' ? ' The online copy is not affected.' : ''), 'Delete tournament', true, function () {
+            removeLocal(); toast('Tournament deleted.');
+          });
+          break;
+        }
+        openDialog({
+          title: 'Delete “' + t.name + '”?',
+          body: '<p>This tournament is published online.</p><label class="check"><input type="checkbox" name="online" checked><span>Also remove it from the web and the public tournament history</span></label>',
+          ok: 'Delete tournament', okClass: 'btn-danger',
+          onOk: function (fd) {
+            if (fd.get('online')) {
+              api('DELETE', t.id, null, t.cloud.key).then(function () { toast('Removed from this device and from the web.'); historyCache = null; },
+                function (err) { toast('Deleted here, but could not remove the online copy: ' + err.message, 'warn'); });
+            } else toast('Deleted from this device. The online copy stays in the history.');
+            removeLocal();
+          }
         });
         break;
       }
+      case 'publish': publishTournament(T(id)); break;
+      case 'share': { var st = T(id); if (st && st.cloud && st.cloud.key) openShareDialog(st); break; }
+      case 'copyLink': copyText(el.getAttribute('data-link')); break;
+      case 'joinNow': joinTournament(id, el.getAttribute('data-key')); break;
+      case 'refreshHistory': historyCache = null; render(true); break;
       case 'addName': {
         var form = el.closest('form'); var ta = form && $('textarea[name="' + el.getAttribute('data-target') + '"]', form);
         if (!ta) return;
@@ -1964,7 +2422,7 @@
       case 'demo': loadDemo(); break;
       case 'resetAll':
         confirmDialog('Delete all data?', 'All players, referees, tournaments and matches on this device will be permanently deleted.', 'Delete everything', true, function () {
-          db = defaults(); save(); toast('All data deleted.'); go('#/');
+          db = defaults(); fps = {}; stamp(true); saveLocal(); toast('All data deleted.'); go('#/');
         });
         break;
     }
@@ -2027,7 +2485,7 @@
       var data = parsed && parsed.data ? parsed.data : parsed;
       if (!data || !Array.isArray(data.players) || !Array.isArray(data.matches)) { toast('That file is not a Biliardo Tournament backup.', 'warn'); input.value = ''; return; }
       confirmDialog('Replace current data?', 'The backup has ' + data.players.length + ' players and ' + (data.tournaments || []).length + ' tournaments. Current data on this device will be replaced.', 'Import', true, function () {
-        db = normalize(data); save(); toast('Backup restored.'); go('#/');
+        db = normalize(data); fps = {}; stamp(true); saveLocal(); toast('Backup restored.'); go('#/');
       });
       input.value = '';
     };
@@ -2038,7 +2496,7 @@
   /* keep tabs in sync if the site is open in two windows */
   window.addEventListener('storage', function (e) {
     if (e.key !== KEY) return;
-    db = load();
+    db = load(); fps = {}; stamp(true);
     if (!(dlg && dlg.open)) render(true);
   });
 

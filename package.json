@@ -1,0 +1,9 @@
+{
+  "name": "biliardo-tournament",
+  "private": true,
+  "type": "module",
+  "description": "Billiards tournament website with online sharing (Netlify Functions + Netlify Blobs).",
+  "dependencies": {
+    "@netlify/blobs": "^11.1.11"
+  }
+}
