@@ -6,7 +6,7 @@ A ready-to-use website for running billiards tournaments. No login, no server, n
 
 - **Start Game**: one button starts a quick match. Type the two player names and an optional referee, then play.
 - **Free Play**: casual play for 2, 3 or 4 players. Choose the points to win (1 to 15) and press **+1 Point** for the player who wins each game (keys `1`–`4` also work). The first player to reach the target wins: pick 9 and the first to 9 wins. Includes undo, Finish now and Play again.
-- **Tournaments**: knockout brackets (byes are handled automatically) or round-robin leagues, with seeding and a random draw.
+- **Tournaments**: knockout brackets (byes are handled automatically) or round-robin leagues. Round 1 can be a random draw, seeded by list order, or **paired by hand**. **✎ Edit pairings** changes who plays who in any knockout round before it starts. Every match shows where its winner goes next (**Winner → SF 1**), and **Result** enters a winner without live scoring.
 - **Categories**: 8-Ball, 9-Ball, 10-Ball, Straight Pool (14.1), Snooker and Italian 5-Pins (Cinque Birilli).
 - **Live referee scoreboard**: an animated SVG referee points to the player who scores, crosses arms for a foul and raises both arms for the winner. Also includes:
   - foul tracking, with the three-foul rule applied automatically

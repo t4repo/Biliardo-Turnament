@@ -367,6 +367,19 @@ input::placeholder, textarea::placeholder { color: #5f7a6d; }
 .bracket { display: grid; grid-template-columns: repeat(var(--rounds), minmax(230px, 1fr)); gap: 22px; overflow-x: auto; padding: 4px 2px 18px; scroll-snap-type: x proximity; }
 .b-round { display: flex; flex-direction: column; min-width: 230px; scroll-snap-align: start; }
 .b-round-title { font: 600 12px/1 var(--font); letter-spacing: .12em; text-transform: uppercase; color: var(--gold); margin: 0 0 12px; text-align: center; }
+.b-edit { align-self: center; margin: -4px 0 12px; }
+.bracket-help { margin: -8px 0 16px; max-width: 80ch; }
+.mc-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 2px 4px 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); border-bottom: 1px solid var(--line); margin-bottom: 2px; }
+.mc-head b { color: var(--gold); font-weight: 700; }
+.mc-actions { display: inline-flex; gap: 6px; }
+.mc-actions .btn { padding: 0 10px; }
+.pair-tools { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.pair-list { display: flex; flex-direction: column; gap: 10px; }
+.pair-row { display: grid; grid-template-columns: 1fr auto 1fr; gap: 6px 8px; align-items: center; padding: 10px; border-radius: 12px; background: var(--bg); border: 1px solid var(--line); }
+.pair-label { grid-column: 1 / -1; font: 700 12px/1 var(--font); letter-spacing: .08em; text-transform: uppercase; color: var(--gold); }
+.pair-vs { color: var(--muted); font-size: 13px; font-weight: 600; }
+.pair-next { grid-column: 1 / -1; font-size: 12px; color: var(--muted); }
+.pair-row select { min-height: 40px; padding: 8px 30px 8px 10px; font-size: 14px; }
 .b-matches { display: flex; flex-direction: column; justify-content: space-around; flex: 1; gap: 14px; }
 .b-slot { position: relative; }
 
@@ -707,6 +720,8 @@ span.form i.f-L { background: rgba(239, 75, 79, .18); color: var(--red-2); }
 .dialog-form { padding: 22px; }
 .dialog-title { font-size: 20px; margin-bottom: 14px; }
 .dialog-body p { color: #c6d6cd; }
+.dialog-body { max-height: min(62vh, 640px); overflow-y: auto; margin: 0 -4px; padding: 0 4px; }
+.dialog:has(.pair-list) { width: min(94vw, 560px); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
 
 #confetti { position: fixed; inset: 0; pointer-events: none; z-index: 90; display: none; }

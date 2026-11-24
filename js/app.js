@@ -436,8 +436,8 @@
         t.championId = m.winnerId; t.status = 'done'; t.endedAt = Date.now();
         return;
       }
-      var nx = nextMatch(m);
-      if (nx) { if (m.idx % 2 === 0) nx.p1 = m.winnerId; else nx.p2 = m.winnerId; }
+      var slot = slotPlan(t, m.round + 1)[m.id];
+      if (slot) slot.m['p' + slot.side] = m.winnerId;
     } else {
       var all = tMatches(t);
       if (all.length && all.every(function (x) { return x.status === 'done'; })) {
@@ -447,18 +447,46 @@
       }
     }
   }
+  /* Where each unfinished match of round r-1 sends its winner in round r.
+     Normally the bracket position (match 1+2 -> next match 1); if the pairings of round r
+     were edited, a winner goes to the free slot left for it. Used both to advance winners
+     and to label empty slots, so the labels always tell the truth. */
+  function slotPlan(t, r) {
+    var all = tMatches(t);
+    var cur = all.filter(function (x) { return x.round === r; });
+    var placed = {};
+    cur.forEach(function (x) { if (x.p1) placed[x.p1] = 1; if (x.p2) placed[x.p2] = 1; });
+    var open = all.filter(function (x) { return x.round === r - 1 && !(x.winnerId && placed[x.winnerId]); });
+    var plan = {}, taken = {};
+    open.forEach(function (src) {
+      var x = null, k = src.idx % 2 === 0 ? 'p1' : 'p2';
+      for (var i = 0; i < cur.length; i++) if (cur[i].idx === Math.floor(src.idx / 2)) x = cur[i];
+      if (x && !x[k] && !taken[x.id + k]) { plan[src.id] = { m: x, side: k === 'p1' ? 1 : 2 }; taken[x.id + k] = 1; }
+    });
+    var empties = [];
+    cur.forEach(function (x) { ['p1', 'p2'].forEach(function (k) { if (!x[k] && !taken[x.id + k]) empties.push({ m: x, side: k === 'p1' ? 1 : 2 }); }); });
+    open.forEach(function (src) { if (!plan[src.id]) plan[src.id] = empties.shift() || null; });
+    return plan;
+  }
+
+  /* the next-round match that currently holds this match's winner */
+  function heldIn(m) {
+    var t = T(m.tId);
+    if (!t || t.format !== 'elim' || m.round >= t.rounds || !m.winnerId) return null;
+    return tMatches(t).filter(function (x) { return x.round === m.round + 1 && (x.p1 === m.winnerId || x.p2 === m.winnerId); })[0] || null;
+  }
   function canUnadvance(m) {
     var t = T(m.tId); if (!t) return true;
     if (t.format !== 'elim' || m.round === t.rounds) return true;
-    var nx = nextMatch(m);
+    var nx = heldIn(m);
     return !nx || nx.status === 'pending';
   }
   function unadvance(m) {
     var t = T(m.tId); if (!t) return;
     t.status = 'active'; t.championId = null; t.endedAt = null;
     if (t.format === 'elim' && m.round < t.rounds) {
-      var nx = nextMatch(m);
-      if (nx) { if (m.idx % 2 === 0) nx.p1 = null; else nx.p2 = null; }
+      var nx = heldIn(m);
+      if (nx) { if (nx.p1 === m.winnerId) nx.p1 = null; else nx.p2 = null; }
     }
   }
 
@@ -858,7 +886,12 @@
             '<label><input type="radio" name="format" value="elim" checked><span><b>Knockout</b><small>Single elimination bracket</small></span></label>' +
             '<label><input type="radio" name="format" value="rr"><span><b>Round robin</b><small>Everyone plays everyone</small></span></label>' +
           '</div>' + formatFields(catId) +
-          '<label class="check"><input type="checkbox" name="shuffle" checked><span>Random draw (shuffle the seeding)</span></label>' +
+          '<label class="field"><span>Draw — who plays who in round 1</span><select name="draw">' +
+            '<option value="random">Random draw</option>' +
+            '<option value="order">Seeded by the order of the list (1st vs last…)</option>' +
+            '<option value="manual">I choose the pairings myself</option>' +
+          '</select></label>' +
+          '<p class="hint">You can change who plays who in any round later with <b>✎ Edit pairings</b>, as long as that round hasn’t started.</p>' +
         '</fieldset>' +
         '<fieldset><legend>Players</legend><label class="field"><span>One name per line <small class="muted" data-count="players">0 players</small></span><textarea name="players" rows="8" placeholder="Marco Rossi&#10;Giulia Bianchi&#10;Luca Verdi&#10;Sara Neri" required></textarea></label>' + chips(db.players, 'players') + '</fieldset>' +
         '<fieldset><legend>Referees</legend><label class="field"><span>One name per line <small class="muted">(optional — assigned in rotation)</small></span><textarea name="referees" rows="3" placeholder="Referee name"></textarea></label>' + chips(db.referees, 'referees') + '</fieldset>' +
@@ -896,7 +929,8 @@
     if (names.length > max) { toast((format === 'elim' ? 'Knockout' : 'Round robin') + ' supports up to ' + max + ' players.', 'warn'); return; }
     var players = names.map(ensurePlayer), referees = refs.map(ensureReferee);
     var ids = players.map(function (p) { return p.id; });
-    if (fd.get('shuffle')) shuffle(ids);
+    var draw = fd.get('draw');
+    if (draw === 'random') shuffle(ids);
     var t = {
       id: uid(), name: name, category: catId, format: format,
       raceTo: c.mode === 'points' ? 1 : intIn(fd.get('raceTo'), 1, 99, c.race),
@@ -908,8 +942,166 @@
     db.tournaments.push(t);
     if (format === 'elim') buildElim(t); else buildRR(t);
     save();
-    toast('Tournament created. Good luck everyone!');
+    if (draw === 'manual' && format === 'elim') {
+      pendingPairEdit = { t: t.id, r: 1 };
+      toast('Tournament created. Now choose who plays who.');
+    } else {
+      toast('Tournament created. Good luck everyone!');
+    }
     go('#/t/' + t.id);
+  }
+
+  /* ---- Knockout pairings: labels, editor and manual results ---- */
+  var pendingPairEdit = null;
+  function roundShort(t, r) {
+    var left = t.rounds - r;
+    return left === 0 ? 'Final' : left === 1 ? 'SF' : left === 2 ? 'QF' : 'R' + Math.pow(2, left + 1);
+  }
+  function matchLabel(t, m) { return t.rounds === m.round ? 'Final' : roundShort(t, m.round) + ' ' + (m.idx + 1); }
+  function elimMatch(t, round, idx) {
+    for (var i = 0; i < db.matches.length; i++) {
+      var x = db.matches[i];
+      if (x.tId === t.id && x.round === round && x.idx === idx) return x;
+    }
+    return null;
+  }
+  function sourceLabel(t, m, side) {
+    var plan = slotPlan(t, m.round);
+    for (var id in plan) {
+      if (plan[id] && plan[id].m === m && plan[id].side === side) { var src = M(id); if (src) return 'Winner of ' + matchLabel(t, src); }
+    }
+    return 'TBD';
+  }
+  function nextLabel(t, m) {
+    var h = heldIn(m);
+    if (h) return matchLabel(t, h);
+    var s = slotPlan(t, m.round + 1)[m.id];
+    if (s) return matchLabel(t, s.m);
+    var d = elimMatch(t, m.round + 1, Math.floor(m.idx / 2));
+    return d ? matchLabel(t, d) : 'next round';
+  }
+  /* A round's pairings can be edited while none of its matches (or later ones) has started
+     and, after round 1, once every player of the round is known. */
+  function roundEditable(t, r) {
+    if (t.format !== 'elim') return false;
+    var rm = tMatches(t).filter(function (m) { return m.round === r; });
+    if (!rm.length) return false;
+    if (r === 1) {
+      if (rm.some(function (m) { return m.status === 'live' || m.status === 'done'; })) return false;
+      var r2 = tMatches(t).filter(function (m) { return m.round === 2; });
+      return r2.every(function (m) { return m.status === 'pending'; });
+    }
+    if (rm.length < 2) return false;
+    return rm.every(function (m) { return m.status === 'pending' && m.p1 && m.p2; });
+  }
+
+  function openPairEditor(t, r) {
+    if (!roundEditable(t, r)) { toast('These pairings can’t be changed because the round has already started.', 'warn'); return; }
+    var rm = tMatches(t).filter(function (m) { return m.round === r; });
+    var pool = r === 1 ? t.playerIds.slice() : rm.reduce(function (a, m) { a.push(m.p1, m.p2); return a; }, []);
+    var byes = rm.length * 2 - pool.length;
+    function sel(name, cur) {
+      return '<select name="' + name + '" aria-label="' + name + '">' +
+        (byes > 0 ? '<option value=""' + (!cur ? ' selected' : '') + '>— Bye —</option>' : '') +
+        pool.map(function (pid) { return '<option value="' + pid + '"' + (pid === cur ? ' selected' : '') + '>' + esc(pName(pid)) + '</option>'; }).join('') +
+        '</select>';
+    }
+    openDialog({
+      title: 'Who plays who — ' + roundName(t, r),
+      body: '<p>Pick the two players for each match. Every player must appear exactly once.' + (byes > 0 ? ' ' + plural(byes, 'player gets', 'players get') + ' a <b>Bye</b> straight into the next round.' : '') + '</p>' +
+        '<div class="pair-tools"><button type="button" class="btn btn-sm btn-secondary" data-pair="shuffle">🔀 Random</button><button type="button" class="btn btn-sm btn-ghost" data-pair="order">1 vs 2, 3 vs 4…</button></div>' +
+        '<div class="pair-list">' + rm.map(function (m, i) {
+          return '<div class="pair-row"><span class="pair-label">' + esc(matchLabel(t, m)) + '</span>' + sel('a' + i, m.p1) + '<span class="pair-vs">vs</span>' + sel('b' + i, m.p2) +
+            (r < t.rounds ? '<span class="pair-next">Winner → ' + esc(matchLabel(t, elimMatch(t, r + 1, Math.floor(m.idx / 2)) || { round: r + 1, idx: 0 })) + '</span>' : '') + '</div>';
+        }).join('') + '</div>',
+      ok: 'Save pairings',
+      onOk: function (fd) {
+        var used = {}, pairs = [];
+        for (var i = 0; i < rm.length; i++) {
+          var a = fd.get('a' + i) || null, b = fd.get('b' + i) || null;
+          if (!a && !b) { toast(matchLabel(t, rm[i]) + ' has no players. Each match needs at least one player.', 'warn'); return false; }
+          if (r > 1 && (!a || !b)) { toast('Every match in this round needs two players.', 'warn'); return false; }
+          var dup = [a, b].filter(Boolean).filter(function (p) { if (used[p]) return true; used[p] = 1; return false; });
+          if (dup.length) { toast(pName(dup[0]) + ' is picked twice. Each player can play only one match per round.', 'warn'); return false; }
+          pairs.push([a, b]);
+        }
+        var missing = pool.filter(function (p) { return !used[p]; });
+        if (missing.length) { toast(pName(missing[0]) + ' is not in any match yet.', 'warn'); return false; }
+        applyPairs(t, r, rm, pairs);
+        save(); toast('Pairings saved.'); render(true);
+      }
+    });
+    var form = $('#dlg form');
+    if (!form) return;
+    form.addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-pair]'); if (!btn) return;
+      var order = pool.slice();
+      if (btn.getAttribute('data-pair') === 'shuffle') shuffle(order);
+      /* fill slots: players first, byes (if any) go to the second slot of the last matches */
+      var slots = [];
+      var withBye = byes;
+      for (var i = 0; i < rm.length; i++) {
+        var hasBye = i >= rm.length - withBye;
+        slots.push([order.shift() || '', hasBye ? '' : (order.shift() || '')]);
+      }
+      slots.forEach(function (s, i) { $('select[name="a' + i + '"]', form).value = s[0]; $('select[name="b' + i + '"]', form).value = s[1]; });
+    });
+  }
+
+  function applyPairs(t, r, rm, pairs) {
+    if (r === 1) {
+      /* undo byes that were already advanced, then re-apply */
+      tMatches(t).filter(function (m) { return m.round === 2; }).forEach(function (m) { m.p1 = null; m.p2 = null; });
+      t.status = 'active'; t.championId = null; t.endedAt = null;
+    }
+    rm.forEach(function (m, i) {
+      m.p1 = pairs[i][0]; m.p2 = pairs[i][1];
+      m.status = 'pending'; m.winner = 0; m.winnerId = null; m.endedAt = null; m.startedAt = null;
+      m.log = []; m.hist = [];
+    });
+    if (r === 1) rm.forEach(function (m) {
+      if (!m.p1 || !m.p2) {
+        m.status = 'bye'; m.winner = m.p1 ? 1 : 2; m.winnerId = m.p1 || m.p2; m.endedAt = Date.now();
+        advance(m);
+      }
+    });
+  }
+
+  function openResultDialog(m) {
+    var t = T(m.tId), c = cat(m);
+    var isPts = c.mode === 'points';
+    var unit = isPts ? 'points' : c.unit.toLowerCase();
+    var full = isPts ? m.target : m.raceTo;
+    openDialog({
+      title: 'Enter result',
+      body: '<p>Use this when the match was played without live scoring. The winner moves on to ' +
+        (t && t.format === 'elim' && m.round < t.rounds ? '<b>' + esc(nextLabel(t, m)) + '</b>' : (t && t.format === 'elim' ? 'the title' : 'the standings')) + '.</p>' +
+        '<label class="field"><span>Winner</span><select name="w"><option value="1">' + esc(sideName(m, 1)) + '</option><option value="2">' + esc(sideName(m, 2)) + '</option></select></label>' +
+        '<div class="grid-2"><label class="field"><span>' + esc(sideName(m, 1)) + ' (' + unit + ')</span><input type="number" name="s1" min="' + (isPts ? -999 : 0) + '" max="999" value="' + full + '" inputmode="numeric"></label>' +
+        '<label class="field"><span>' + esc(sideName(m, 2)) + ' (' + unit + ')</span><input type="number" name="s2" min="' + (isPts ? -999 : 0) + '" max="999" value="0" inputmode="numeric"></label></div>',
+      ok: 'Save result',
+      onOk: function (fd) {
+        var w = fd.get('w') === '2' ? 2 : 1;
+        var a = parseInt(fd.get('s1'), 10), b = parseInt(fd.get('s2'), 10);
+        if (!isFinite(a) || !isFinite(b)) { toast('Enter both scores.', 'warn'); return false; }
+        if ((w === 1 && a <= b) || (w === 2 && b <= a)) { toast('The winner must have the higher score.', 'warn'); return false; }
+        if (m.status !== 'pending' || !m.p1 || !m.p2) return;
+        if (isPts) { m.tp1 = a; m.tp2 = b; m.g1 = a; m.g2 = b; m.s1 = w === 1 ? 1 : 0; m.s2 = w === 2 ? 1 : 0; }
+        else { m.s1 = a; m.s2 = b; }
+        m.startedAt = Date.now();
+        m.status = 'live';
+        addLog(m, 0, 'info', 'Result entered manually');
+        finish(m, w);
+        pendingGesture = null;
+        if (!(t && t.status === 'done')) celebrate = false;
+        save(); toast('Result saved — ' + sideName(m, w) + ' goes through.'); render(true);
+      }
+    });
+    var sel = $('#dlg select[name="w"]');
+    if (sel) sel.addEventListener('change', function () {
+      var s1 = $('#dlg input[name="s1"]'), s2 = $('#dlg input[name="s2"]');
+      if (sel.value === '2') { s1.value = 0; s2.value = full; } else { s1.value = full; s2.value = 0; }
+    });
   }
 
   function matchCard(m, t) {
@@ -918,15 +1110,18 @@
       var id = m['p' + side];
       var score = bye ? '' : (m.status === 'pending' ? '' : (m.wo ? (m.winner === side ? 'W' : '–') : (c.mode === 'points' ? m['tp' + side] : m['s' + side])));
       return '<div class="mc-line' + ((done || bye) && m.winner === side ? ' win' : '') + ((done || bye) && m.winner && m.winner !== side ? ' lose' : '') + '">' +
-        '<span class="mc-name">' + (id ? esc(pName(id)) : '<i class="muted">' + (bye && !id ? 'Bye' : 'TBD') + '</i>') + '</span><b class="mc-score">' + score + '</b></div>';
+        '<span class="mc-name">' + (id ? esc(pName(id)) : '<i class="muted">' + (bye ? 'Bye' : (elim && m.round > 1 ? esc(sourceLabel(t, m, side)) : 'TBD')) + '</i>') + '</span><b class="mc-score">' + score + '</b></div>';
     }
+    var elim = t && t.format === 'elim';
     var action = '';
     if (bye) action = '<span class="badge">Bye</span>';
     else if (m.status === 'live') action = '<a class="btn btn-sm btn-live" href="#/match/' + m.id + '">● Resume</a>';
     else if (done) action = '<a class="btn btn-sm btn-ghost" href="#/match/' + m.id + '">View</a>';
-    else if (m.p1 && m.p2) action = '<button class="btn btn-sm btn-primary" data-action="startMatch" data-id="' + m.id + '">Start</button>';
+    else if (m.p1 && m.p2) action = '<span class="mc-actions"><button class="btn btn-sm btn-ghost" data-action="setResult" data-id="' + m.id + '" title="Enter the result without live scoring">Result</button><button class="btn btn-sm btn-primary" data-action="startMatch" data-id="' + m.id + '">Start</button></span>';
     else action = '<span class="muted tiny">Waiting</span>';
-    return '<div class="mc mc-' + m.status + '">' + line(1) + line(2) +
+    var head = elim ? '<div class="mc-head"><b>' + esc(matchLabel(t, m)) + '</b>' +
+      (m.round < t.rounds ? '<span>Winner → ' + esc(nextLabel(t, m)) + '</span>' : '<span>🏆 Champion</span>') + '</div>' : '';
+    return '<div class="mc mc-' + m.status + '">' + head + line(1) + line(2) +
       '<div class="mc-foot"><span class="muted tiny">' + (m.refId ? '🧑‍⚖️ ' + esc(rName(m.refId)) : (bye ? 'Advances automatically' : '')) + '</span>' + action + '</div></div>';
   }
 
@@ -953,10 +1148,13 @@
 
     if (tab === 'matches') {
       if (t.format === 'elim') {
+        html += '<p class="bracket-help muted small">Winners move on automatically, following the <b>Winner →</b> label on each match. Use <b>✎ Edit pairings</b> to choose who plays who before a round starts, or <b>Result</b> to enter a winner without live scoring.</p>';
         html += '<div class="bracket" style="--rounds:' + t.rounds + '">';
         for (var r = 1; r <= t.rounds; r++) {
           var rm = ms.filter(function (m) { return m.round === r; });
-          html += '<div class="b-round"><h3 class="b-round-title">' + esc(roundName(t, r)) + '</h3><div class="b-matches">' + rm.map(function (m) { return '<div class="b-slot">' + matchCard(m, t) + '</div>'; }).join('') + '</div></div>';
+          html += '<div class="b-round"><h3 class="b-round-title">' + esc(roundName(t, r)) + '</h3>' +
+            (roundEditable(t, r) ? '<button class="btn btn-sm btn-secondary b-edit" data-action="editPairs" data-id="' + t.id + '" data-n="' + r + '">✎ Edit pairings</button>' : '') +
+            '<div class="b-matches">' + rm.map(function (m) { return '<div class="b-slot">' + matchCard(m, t) + '</div>'; }).join('') + '</div></div>';
         }
         html += '</div>';
       } else {
@@ -1418,6 +1616,11 @@
     document.title = (currentMatchId ? 'Live score · ' : (titles[nav] ? titles[nav] + ' · ' : (path === '/play' ? 'Start game · ' : ''))) + 'Biliardo Tournament';
 
     if (after) after();
+    if (pendingPairEdit) {
+      var pe = pendingPairEdit; pendingPairEdit = null;
+      var pt = T(pe.t);
+      if (pt && path === '/t/' + pt.id) openPairEditor(pt, pe.r);
+    }
     if (currentMatchId) {
       var m = M(currentMatchId);
       if (m && (m.status === 'live' || m.status === 'done')) startTicker(m);
@@ -1497,6 +1700,8 @@
       case 'undo': m = M(id); if (m) undo(m); break;
       case 'clock': clockOp(el.getAttribute('data-op')); break;
       case 'startMatch': m = M(id); if (m && m.status === 'pending' && m.p1 && m.p2) openStartDialog(m); break;
+      case 'setResult': m = M(id); if (m && m.status === 'pending' && m.p1 && m.p2) openResultDialog(m); break;
+      case 'editPairs': { var et = T(id); if (et) openPairEditor(et, parseInt(el.getAttribute('data-n'), 10)); break; }
       case 'walkover': {
         m = M(id); if (!m || m.status !== 'live') return;
         openDialog({
