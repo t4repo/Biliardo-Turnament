@@ -999,6 +999,28 @@
     return rm.every(function (m) { return m.status === 'pending' && m.p1 && m.p2; });
   }
 
+  /* In the pairing windows, choosing a player who is already in another match swaps
+     the two: the player moves here and whoever was here takes their old place. */
+  function syncPrev(form) { $$('.pair-list select', form).forEach(function (s) { s.setAttribute('data-prev', s.value); }); }
+  function wireSwap(form) {
+    syncPrev(form);
+    form.addEventListener('change', function (e) {
+      var s = e.target;
+      if (!s.matches || !s.matches('.pair-list select')) return;
+      var v = s.value, prev = s.getAttribute('data-prev') || '';
+      if (v) {
+        $$('.pair-list select', form).forEach(function (o) {
+          if (o !== s && o.value === v) {
+            o.value = prev;
+            o.classList.remove('swapped'); void o.offsetWidth; o.classList.add('swapped');
+          }
+        });
+      }
+      syncPrev(form);
+    });
+  }
+  var SWAP_TIP = '<p class="pair-tip">Tip: choosing a player who is already in another match <b>swaps</b> the two players.</p>';
+
   /* ---- Round robin: choose the matches of a round; the rest are rescheduled ---- */
   function pairKey(a, b) { return a < b ? a + '|' + b : b + '|' + a; }
 
@@ -1014,7 +1036,7 @@
         t.playerIds.map(function (pid) { return '<option value="' + pid + '"' + (pid === val ? ' selected' : '') + '>' + esc(pName(pid)) + '</option>'; }).join('') + '</select>';
     }
     var body = '<p>Pick who plays who in this round. Each player plays at most once per round' + (t.playerIds.length % 2 ? ' (one player rests)' : '') +
-      '. Everyone still plays everyone once in the league: the other matches are moved to the other rounds automatically.</p>' +
+      '. Everyone still plays everyone once in the league: the other matches are moved to the other rounds automatically.</p>' + SWAP_TIP +
       '<div class="pair-tools"><button type="button" class="btn btn-sm btn-secondary" data-pair="shuffle">🔀 Random</button><button type="button" class="btn btn-sm btn-ghost" data-pair="clear">Clear</button></div>' +
       '<div class="pair-list">';
     for (var i = 0; i < rows; i++) {
@@ -1033,8 +1055,8 @@
           if (!a && !b) continue;
           if (!a || !b) { toast('Match ' + (i + 1) + ' needs two players (or leave both empty).', 'warn'); return false; }
           if (a === b) { toast(pName(a) + ' can’t play against themselves.', 'warn'); return false; }
-          var dup = [a, b].filter(function (x) { if (used[x]) return true; used[x] = 1; return false; });
-          if (dup.length) { toast(pName(dup[0]) + ' is picked twice. Each player plays only once per round.', 'warn'); return false; }
+          var dup = [a, b].filter(function (x) { if (used[x]) return true; used[x] = 'Match ' + (i + 1); return false; });
+          if (dup.length) { toast(pName(dup[0]) + ' is in both ' + used[dup[0]] + ' and Match ' + (i + 1) + '. Change one of them.', 'warn'); return false; }
           var m = byPair[pairKey(a, b)];
           if (!m) { toast(pName(a) + ' and ' + pName(b) + ' are not both in this league.', 'warn'); return false; }
           if (m.status === 'done') { toast(pName(a) + ' and ' + pName(b) + ' have already played each other (Round ' + m.round + ').', 'warn'); return false; }
@@ -1074,7 +1096,9 @@
         $('select[name="a' + i + '"]', form).value = fill[i] ? fill[i][0] : '';
         $('select[name="b' + i + '"]', form).value = fill[i] ? fill[i][1] : '';
       }
+      syncPrev(form);
     });
+    wireSwap(form);
   }
 
   /* Put the chosen matches in round r, keep every started/played match where it is,
@@ -1140,7 +1164,7 @@
     }
     openDialog({
       title: 'Who plays who — ' + roundName(t, r),
-      body: '<p>Pick the two players for each match. Every player must appear exactly once.' + (byes > 0 ? ' ' + plural(byes, 'player gets', 'players get') + ' a <b>Bye</b> straight into the next round.' : '') + '</p>' +
+      body: '<p>Pick the two players for each match. Every player must appear exactly once.' + (byes > 0 ? ' ' + plural(byes, 'player gets', 'players get') + ' a <b>Bye</b> straight into the next round.' : '') + '</p>' + SWAP_TIP +
         '<div class="pair-tools"><button type="button" class="btn btn-sm btn-secondary" data-pair="shuffle">🔀 Random</button><button type="button" class="btn btn-sm btn-ghost" data-pair="order">1 vs 2, 3 vs 4…</button></div>' +
         '<div class="pair-list">' + rm.map(function (m, i) {
           return '<div class="pair-row"><span class="pair-label">' + esc(matchLabel(t, m)) + '</span>' + sel('a' + i, m.p1) + '<span class="pair-vs">vs</span>' + sel('b' + i, m.p2) +
@@ -1153,8 +1177,9 @@
           var a = fd.get('a' + i) || null, b = fd.get('b' + i) || null;
           if (!a && !b) { toast(matchLabel(t, rm[i]) + ' has no players. Each match needs at least one player.', 'warn'); return false; }
           if (r > 1 && (!a || !b)) { toast('Every match in this round needs two players.', 'warn'); return false; }
-          var dup = [a, b].filter(Boolean).filter(function (p) { if (used[p]) return true; used[p] = 1; return false; });
-          if (dup.length) { toast(pName(dup[0]) + ' is picked twice. Each player can play only one match per round.', 'warn'); return false; }
+          if (a && a === b) { toast(pName(a) + ' is picked on both sides of ' + matchLabel(t, rm[i]) + '. Choose a different opponent.', 'warn'); return false; }
+          var dup = [a, b].filter(Boolean).filter(function (p) { if (used[p]) return true; used[p] = matchLabel(t, rm[i]); return false; });
+          if (dup.length) { toast(pName(dup[0]) + ' is in both ' + used[dup[0]] + ' and ' + matchLabel(t, rm[i]) + '. Change one of them.', 'warn'); return false; }
           pairs.push([a, b]);
         }
         var missing = pool.filter(function (p) { return !used[p]; });
@@ -1177,7 +1202,9 @@
         slots.push([order.shift() || '', hasBye ? '' : (order.shift() || '')]);
       }
       slots.forEach(function (s, i) { $('select[name="a' + i + '"]', form).value = s[0]; $('select[name="b' + i + '"]', form).value = s[1]; });
+      syncPrev(form);
     });
+    wireSwap(form);
   }
 
   function applyPairs(t, r, rm, pairs) {
