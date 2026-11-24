@@ -942,7 +942,7 @@
     db.tournaments.push(t);
     if (format === 'elim') buildElim(t); else buildRR(t);
     save();
-    if (draw === 'manual' && format === 'elim') {
+    if (draw === 'manual') {
       pendingPairEdit = { t: t.id, r: 1 };
       toast('Tournament created. Now choose who plays who.');
     } else {
@@ -983,9 +983,13 @@
   /* A round's pairings can be edited while none of its matches (or later ones) has started
      and, after round 1, once every player of the round is known. */
   function roundEditable(t, r) {
-    if (t.format !== 'elim') return false;
     var rm = tMatches(t).filter(function (m) { return m.round === r; });
     if (!rm.length) return false;
+    if (t.format === 'rr') {
+      /* a league round can be changed until one of its matches starts,
+         as long as there is something unplayed to swap in */
+      return rm.every(function (m) { return m.status === 'pending'; }) && t.playerIds.length > 2;
+    }
     if (r === 1) {
       if (rm.some(function (m) { return m.status === 'live' || m.status === 'done'; })) return false;
       var r2 = tMatches(t).filter(function (m) { return m.round === 2; });
@@ -995,8 +999,136 @@
     return rm.every(function (m) { return m.status === 'pending' && m.p1 && m.p2; });
   }
 
+  /* ---- Round robin: choose the matches of a round; the rest are rescheduled ---- */
+  function pairKey(a, b) { return a < b ? a + '|' + b : b + '|' + a; }
+
+  function openRRPairEditor(t, r) {
+    var all = tMatches(t);
+    var rm = all.filter(function (m) { return m.round === r; });
+    var byPair = {};
+    all.forEach(function (m) { byPair[pairKey(m.p1, m.p2)] = m; });
+    var rows = Math.floor(t.playerIds.length / 2);
+    var cur = rm.map(function (m) { return [m.p1, m.p2]; });
+    function sel(name, val) {
+      return '<select name="' + name + '" aria-label="' + name + '"><option value="">— none —</option>' +
+        t.playerIds.map(function (pid) { return '<option value="' + pid + '"' + (pid === val ? ' selected' : '') + '>' + esc(pName(pid)) + '</option>'; }).join('') + '</select>';
+    }
+    var body = '<p>Pick who plays who in this round. Each player plays at most once per round' + (t.playerIds.length % 2 ? ' (one player rests)' : '') +
+      '. Everyone still plays everyone once in the league: the other matches are moved to the other rounds automatically.</p>' +
+      '<div class="pair-tools"><button type="button" class="btn btn-sm btn-secondary" data-pair="shuffle">🔀 Random</button><button type="button" class="btn btn-sm btn-ghost" data-pair="clear">Clear</button></div>' +
+      '<div class="pair-list">';
+    for (var i = 0; i < rows; i++) {
+      var p = cur[i] || [null, null];
+      body += '<div class="pair-row"><span class="pair-label">Match ' + (i + 1) + '</span>' + sel('a' + i, p[0]) + '<span class="pair-vs">vs</span>' + sel('b' + i, p[1]) + '</div>';
+    }
+    body += '</div>';
+    openDialog({
+      title: 'Who plays who — Round ' + r,
+      body: body,
+      ok: 'Save pairings',
+      onOk: function (fd) {
+        var used = {}, pairs = [], sides = [];
+        for (var i = 0; i < rows; i++) {
+          var a = fd.get('a' + i) || null, b = fd.get('b' + i) || null;
+          if (!a && !b) continue;
+          if (!a || !b) { toast('Match ' + (i + 1) + ' needs two players (or leave both empty).', 'warn'); return false; }
+          if (a === b) { toast(pName(a) + ' can’t play against themselves.', 'warn'); return false; }
+          var dup = [a, b].filter(function (x) { if (used[x]) return true; used[x] = 1; return false; });
+          if (dup.length) { toast(pName(dup[0]) + ' is picked twice. Each player plays only once per round.', 'warn'); return false; }
+          var m = byPair[pairKey(a, b)];
+          if (!m) { toast(pName(a) + ' and ' + pName(b) + ' are not both in this league.', 'warn'); return false; }
+          if (m.status === 'done') { toast(pName(a) + ' and ' + pName(b) + ' have already played each other (Round ' + m.round + ').', 'warn'); return false; }
+          if (m.status === 'live') { toast(pName(a) + ' vs ' + pName(b) + ' is being played right now.', 'warn'); return false; }
+          pairs.push(m); sides.push([a, b]);
+        }
+        if (!pairs.length) { toast('Pick at least one match for this round.', 'warn'); return false; }
+        /* show each match the way it was picked (left player first); safe because none has started */
+        pairs.forEach(function (m, k) { m.p1 = sides[k][0]; m.p2 = sides[k][1]; });
+        rescheduleRR(t, r, pairs);
+        save(); toast('Pairings saved. The schedule was updated.'); render(true);
+      }
+    });
+    var form = $('#dlg form');
+    if (!form) return;
+    form.addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-pair]'); if (!btn) return;
+      var fill = [];
+      if (btn.getAttribute('data-pair') === 'shuffle') {
+        /* random pairing using only matches that are still unplayed; keep the largest one found */
+        var best = [];
+        for (var tries = 0; tries < 300 && best.length < rows; tries++) {
+          var order = shuffle(t.playerIds.slice()), got = [], busy = {};
+          for (var x = 0; x < order.length; x++) {
+            if (busy[order[x]]) continue;
+            for (var y = x + 1; y < order.length; y++) {
+              if (busy[order[y]]) continue;
+              var mm = byPair[pairKey(order[x], order[y])];
+              if (mm && mm.status === 'pending') { got.push([order[x], order[y]]); busy[order[x]] = busy[order[y]] = 1; break; }
+            }
+          }
+          if (got.length > best.length) best = got;
+        }
+        fill = best;
+      }
+      for (var i = 0; i < rows; i++) {
+        $('select[name="a' + i + '"]', form).value = fill[i] ? fill[i][0] : '';
+        $('select[name="b' + i + '"]', form).value = fill[i] ? fill[i][1] : '';
+      }
+    });
+  }
+
+  /* Put the chosen matches in round r, keep every started/played match where it is,
+     and fit all other unplayed matches into the earliest round where both players are free. */
+  function rescheduleRR(t, r, chosen) {
+    var all = tMatches(t);
+    var isChosen = {};
+    chosen.forEach(function (m) { isChosen[m.id] = 1; });
+    var base = {};
+    function mark(busy, round, m) { busy[round] = busy[round] || {}; busy[round][m.p1] = 1; busy[round][m.p2] = 1; }
+    all.forEach(function (m) { if (m.status !== 'pending') mark(base, m.round, m); });
+    chosen.forEach(function (m) { mark(base, r, m); });
+    var rest = all.filter(function (m) { return m.status === 'pending' && !isChosen[m.id]; })
+      .sort(function (a, b) { return a.round - b.round || a.idx - b.idx; });
+    /* place each match in the earliest round where both players are free */
+    function place(order) {
+      var busy = {}, assign = {}, used = {};
+      Object.keys(base).forEach(function (k) { busy[k] = Object.assign({}, base[k]); used[k] = 1; });
+      order.forEach(function (m) {
+        for (var round = 1; ; round++) {
+          if (round === r) continue;
+          var bz = busy[round] || {};
+          if (!bz[m.p1] && !bz[m.p2]) { assign[m.id] = round; mark(busy, round, m); used[round] = 1; return; }
+        }
+      });
+      return { assign: assign, count: Object.keys(used).length };
+    }
+    /* the current order first (keeps the schedule familiar), then random orders;
+       keep whichever needs the fewest rounds */
+    var best = place(rest);
+    var target = t.playerIds.length % 2 ? t.playerIds.length : t.playerIds.length - 1;
+    for (var tries = 0; tries < 400 && best.count > target; tries++) {
+      var cand = place(shuffle(rest.slice()));
+      if (cand.count < best.count) best = cand;
+    }
+    chosen.forEach(function (m) { m.round = r; });
+    rest.forEach(function (m) { m.round = best.assign[m.id]; });
+    /* renumber rounds 1..k without gaps and re-index matches inside each round */
+    var rounds = [];
+    all.forEach(function (m) { if (rounds.indexOf(m.round) < 0) rounds.push(m.round); });
+    rounds.sort(function (a, b) { return a - b; });
+    var counter = {};
+    all.sort(function (a, b) { return a.round - b.round || (isChosen[b.id] ? 1 : 0) - (isChosen[a.id] ? 1 : 0) || a.idx - b.idx; })
+      .forEach(function (m) {
+        m.round = rounds.indexOf(m.round) + 1;
+        counter[m.round] = (counter[m.round] || 0);
+        m.idx = counter[m.round]++;
+      });
+    t.rounds = rounds.length;
+  }
+
   function openPairEditor(t, r) {
     if (!roundEditable(t, r)) { toast('These pairings can’t be changed because the round has already started.', 'warn'); return; }
+    if (t.format === 'rr') { openRRPairEditor(t, r); return; }
     var rm = tMatches(t).filter(function (m) { return m.round === r; });
     var pool = r === 1 ? t.playerIds.slice() : rm.reduce(function (a, m) { a.push(m.p1, m.p2); return a; }, []);
     var byes = rm.length * 2 - pool.length;
@@ -1163,7 +1295,8 @@
           var playing = {};
           list.forEach(function (m) { playing[m.p1] = 1; playing[m.p2] = 1; });
           var resting = t.playerIds.filter(function (pid) { return !playing[pid]; });
-          html += '<section class="rr-round"><h3>Round ' + rr + (resting.length ? ' <small class="muted">· rest: ' + esc(resting.map(pName).join(', ')) + '</small>' : '') + '</h3><div class="grid-cards">' + list.map(function (m) { return matchCard(m, t); }).join('') + '</div></section>';
+          html += '<section class="rr-round"><div class="rr-head"><h3>Round ' + rr + (resting.length ? ' <small class="muted">· rest: ' + esc(resting.map(pName).join(', ')) + '</small>' : '') + '</h3>' +
+            (roundEditable(t, rr) ? '<button class="btn btn-sm btn-secondary" data-action="editPairs" data-id="' + t.id + '" data-n="' + rr + '">✎ Edit pairings</button>' : '') + '</div><div class="grid-cards">' + list.map(function (m) { return matchCard(m, t); }).join('') + '</div></section>';
         }
       }
     } else if (tab === 'standings') {

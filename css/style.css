@@ -398,7 +398,9 @@ input::placeholder, textarea::placeholder { color: #5f7a6d; }
 .mc-line.lose { opacity: .55; }
 .mc-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding-top: 8px; margin-top: 4px; border-top: 1px solid var(--line); min-height: 42px; }
 .rr-round { margin-bottom: 26px; }
-.rr-round h3 { font-size: 15px; color: var(--gold); text-transform: uppercase; letter-spacing: .08em; }
+.rr-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.rr-head h3 { margin: 0; }
+.rr-round h3 {font-size: 15px; color: var(--gold); text-transform: uppercase; letter-spacing: .08em; }
 .rr-round h3 small { text-transform: none; letter-spacing: 0; }
 
 .ref-list li, .people li { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
